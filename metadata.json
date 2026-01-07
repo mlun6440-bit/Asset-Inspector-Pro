@@ -1,0 +1,9 @@
+{
+  "name": "Asset Inspector Pro",
+  "description": "AI-powered building asset inspection tool with integrated Gemini Chatbot for real-time data analysis.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}
