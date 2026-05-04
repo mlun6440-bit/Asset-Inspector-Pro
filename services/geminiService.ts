@@ -65,10 +65,14 @@ export const cropImage = async (base64Image: string, bbox: { x: number, y: numbe
   });
 };
 
-export const detectAssetsWithBoundingBoxes = async (images: { dataUrl: string }[], allowedCategories: string[], privacyMode: boolean = false): Promise<Asset[]> => {
+export const detectAssetsWithBoundingBoxes = async (images: { dataUrl: string }[], allowedCategories: string[], privacyMode: boolean = false, existingAssets: Asset[] = []): Promise<Asset[]> => {
   if (!apiKey) throw new Error("API Key not found");
 
   const categoriesContext = allowedCategories.map(cat => `- ${cat}`).join('\n');
+  const existingAssetsContext = existingAssets.length > 0 ? 
+    `\n    PAST ASSETS HISTORY:\n    ` + JSON.stringify(existingAssets.map(a => ({ id: a.id, description: a.description, pastCondition: a.condition, pastRisk: a.riskRating }))) + 
+    `\n\n    *RE-INSPECTION INSTRUCTION*: If you detect an asset in the images that matches an asset from the 'PAST ASSETS HISTORY', you MUST set its 'id' to the existing asset's id. Compare the new image to the 'pastCondition'. Explain exactly how it changed in the justification.` 
+    : '';
 
   const prompt = `
     You are a Professional Building Surveyor conducting a Facility Condition Assessment aligned with ISO 55000 standards.
@@ -76,6 +80,7 @@ export const detectAssetsWithBoundingBoxes = async (images: { dataUrl: string }[
     CONTEXT:
     The user has provided ${images.length} images of the **SAME ROOM** taken from different angles. 
     You must treat these images as a single 3D environment.
+    ${existingAssetsContext}
 
     YOUR TASKS:
     1. **3D SPATIAL DEDUPLICATION (CRITICAL)**: 
@@ -109,6 +114,10 @@ export const detectAssetsWithBoundingBoxes = async (images: { dataUrl: string }[
     items: {
       type: Type.OBJECT,
       properties: {
+        id: {
+          type: Type.STRING,
+          description: "Required IF matching a past asset from 'PAST ASSETS HISTORY', otherwise omit."
+        },
         category: {
           type: Type.STRING,
           enum: allowedCategories, 
@@ -193,7 +202,7 @@ export const detectAssetsWithBoundingBoxes = async (images: { dataUrl: string }[
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3-flash-preview',
       contents: { parts },
       config: {
         responseMimeType: "application/json",
@@ -227,7 +236,7 @@ export const detectAssetsWithBoundingBoxes = async (images: { dataUrl: string }[
           timestamp: Date.now(),
           actor: 'AI',
           action: 'CREATED',
-          details: `Detected via Gemini 2.5 Flash. Confidence High.`
+          details: `Detected via Gemini 3.0 Flash. Confidence High.`
       }]
     }));
 
@@ -250,10 +259,12 @@ export const createChatStream = async (
   if (Array.isArray(contextData)) {
       const portfolioSummary = contextData.map((d: any) => {
           const siteName = privacyMode ? "REDACTED_SITE" : d.siteInfo?.name || "Unknown";
+          const docSummary = d.siteInfo?.documents?.length ? `DOCUMENTS EXTRACTED:\n${d.siteInfo.documents.map((doc: any) => `- ${doc.name}: ${doc.summary}`).join('\n')}` : '';
           return `
             SITE: ${siteName}
+            ${docSummary}
             ASSETS: ${(d.rooms || []).flatMap((r:any) => (r.assets || []).map((a:any) => 
-                `${a.category} [Age: ${a.age}y, RUL: ${a.rul}y] (${a.condition}, Risk: ${a.riskRating || 'N/A'}): ${a.justification} [Cost: $${a.cost}]`
+                `${a.category} [Age: ${a.age}y, RUL: ${a.rul}y] (${a.condition}, Risk: ${a.riskRating || 'N/A'}): ${a.justification} [Cost: ${a.cost}]`
             )).join('; ')}
           `;
       }).join('\n---\n');
@@ -265,6 +276,7 @@ export const createChatStream = async (
         1. Compare performance and risk across the portfolio.
         2. Identify the "Worst Performing" buildings based on asset condition and RISK RATINGS.
         3. Aggregated CAPEX forecasting using provided Costs and Ages.
+        4. Cross-reference uploaded service records and PM reports to validate asset conditions.
         
         PORTFOLIO DATA:
         ${portfolioSummary}
@@ -272,12 +284,20 @@ export const createChatStream = async (
   } else {
       const siteName = privacyMode ? "REDACTED_SITE_NAME" : contextData.siteInfo.name;
       const siteAddress = privacyMode ? "REDACTED_LOCATION" : contextData.siteInfo.address;
+      const docs = contextData.siteInfo.documents?.length ? `SERVICE/PM REPORTS EXRACTED:\n${contextData.siteInfo.documents.map((d: any) => `- ${d.name}:\n${d.summary}`).join('\n\n')}` : "None provided.";
       
       systemPrompt = `
         You are a specialized **Engineering Asset Manager**.
         
         CRITICAL INSTRUCTION:
         For every asset recommendation, you MUST strictly apply **"Scenario 3 Logic"** (ISO 55000 Standard).
+        Consider cost context, life cycle (age, RUL), and risk, but ALWAYS check if the uploaded Service/PM Reports contradict visual conditions or add hidden context.
+
+        SITE CONTEXT:
+        Site Name: ${siteName}
+        Location: ${siteAddress}
+
+        ${docs}
         
         **THE SCENARIO 3 LOGIC FRAMEWORK:**
         
@@ -324,6 +344,103 @@ export const createChatStream = async (
   return await chat.sendMessageStream({ message });
 };
 
+export const analyzeDocument = async (base64Data: string, mimeType: string, fileName: string): Promise<string> => {
+    if (!apiKey) throw new Error("API Key not found");
+
+    const prompt = `
+      You are a Senior Engineering Asset Manager.
+      Please review the attached document (File Name: ${fileName}). This is likely a Service Report, Preventive Maintenance (PM) report, or Compliance Certificate.
+      
+      Extract and summarize the following in a concise, structural format for an Asset Management system:
+      - Key assets mentioned and their last known condition.
+      - Any identified risks, failures, or non-compliances.
+      - Recommended remedial actions, repairs, or replacements.
+      - Dates of service and overall compliance status.
+    `;
+
+    const response = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: [
+            { role: 'user', parts: [
+                { inlineData: { data: base64Data.split(',')[1], mimeType } }, 
+                { text: prompt }
+            ]}
+        ]
+    });
+
+    return response.text || "No insights could be extracted from the document.";
+};
+
+export const extractAssetsFromVendorRegister = async (base64Data: string, mimeType: string, fileName: string): Promise<{roomName: string, assets: Partial<Asset>[]}[]> => {
+    if (!apiKey) throw new Error("API Key not found");
+
+    const prompt = `
+      You are an AI Data Engineer specializing in Asset Management.
+      The user has uploaded a document (File Name: ${fileName}) containing asset information.
+      This document might be a structured table (CSV/Excel), a PDF, a loosely formatted list, or even unstructured narrative text paragraphs.
+      
+      Scan the entire document carefully. Extract every physical building asset mentioned and logically group them into "Areas/Rooms" (e.g., "Roof", "Plant Room", "Room 1"). If no specific locations or rooms are mentioned, group them under a single "General Site Area".
+      
+      Map the extracted asset data to our standard schema:
+      - category: e.g. 'HVAC', 'Fire', 'Electrical', 'Plumbing', 'Fabric', etc.
+      - description: The asset name / description (e.g., "Daikin Split System", "Fire Extinguisher").
+      - riskRating: 'Low', 'Medium', 'High', 'Extreme'. Infer from text if not explicit.
+      - condition: The condition stated (e.g., 'Good', 'Poor', 'Requires Maintenance').
+      - cost: Estimated replacement/repair cost if available, else '0'.
+      - quantity: If specified, else 1.
+      - rul: Remaining Useful Life if specified or implied, else 'Unknown'.
+      - age: Estimated age if specified or implied, else 'Unknown'.
+      - justification: Context, notes, or observations about the asset from the text.
+    `;
+
+    const response = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: [
+            { role: 'user', parts: [
+                { inlineData: { data: base64Data.split(',')[1], mimeType } }, 
+                { text: prompt }
+            ]}
+        ],
+        config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+                type: Type.ARRAY,
+                items: {
+                    type: Type.OBJECT,
+                    properties: {
+                        roomName: { type: Type.STRING },
+                        assets: {
+                            type: Type.ARRAY,
+                            items: {
+                                type: Type.OBJECT,
+                                properties: {
+                                    category: { type: Type.STRING },
+                                    description: { type: Type.STRING },
+                                    riskRating: { type: Type.STRING },
+                                    condition: { type: Type.STRING },
+                                    cost: { type: Type.STRING },
+                                    quantity: { type: Type.STRING },
+                                    rul: { type: Type.STRING },
+                                    age: { type: Type.STRING },
+                                    justification: { type: Type.STRING }
+                                },
+                                required: ["category", "description", "condition", "justification"]
+                            }
+                        }
+                    },
+                    required: ["roomName", "assets"]
+                }
+            }
+        }
+    });
+
+    try {
+        return JSON.parse(response.text || "[]");
+    } catch {
+        return [];
+    }
+};
+
 export const summarizeConversation = async (messages: ChatMessage[]): Promise<string> => {
     if (!apiKey) throw new Error("API Key not found");
     if (messages.length < 2) return ""; 
@@ -343,8 +460,9 @@ export const summarizeConversation = async (messages: ChatMessage[]): Promise<st
     `;
 
     try {
+        // Use gemini-3-flash-preview for basic text tasks like summarization
         const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
+            model: 'gemini-3-flash-preview',
             contents: prompt
         });
         return response.text || "";

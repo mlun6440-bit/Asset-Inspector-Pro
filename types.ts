@@ -13,6 +13,13 @@ export interface AuditEntry {
   details: string;
 }
 
+export interface RiskHistoryEntry {
+  timestamp: number;
+  actor: 'AI' | 'USER';
+  previousRisk?: string;
+  newRisk: string;
+}
+
 export interface Asset {
   id: string;
   name: string;
@@ -20,6 +27,7 @@ export interface Asset {
   description: string;
   condition: string;
   riskRating?: string; // Low, Medium, High, Extreme
+  riskHistory?: RiskHistoryEntry[];
   justification: string;
   quantity: number | string;
   cost: string;
@@ -50,11 +58,19 @@ export interface Room {
   comments: string;
 }
 
+export interface DocumentInsight {
+  id: string;
+  name: string;
+  summary: string;
+  dateAdded: number;
+}
+
 export interface SiteInfo {
   name: string;
   address: string;
   numRooms: number;
   notes?: string;
+  documents?: DocumentInsight[];
 }
 
 export interface AppState {

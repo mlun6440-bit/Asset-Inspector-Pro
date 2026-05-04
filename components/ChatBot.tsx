@@ -4,7 +4,7 @@ import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
 import { createChatStream } from '../services/geminiService';
 import { ChatMessage } from '../types';
 
-// PCM Audio Utilities as per @google/genai coding guidelines
+// PCM Audio Utilities
 function encode(bytes: Uint8Array) {
   let binary = '';
   const len = bytes.byteLength;
@@ -60,12 +60,15 @@ export const ChatBot: React.FC<ChatBotProps> = ({ contextData, privacyMode, mode
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   
-  // Audio Refs
+  // Refs
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const audioContextInRef = useRef<AudioContext | null>(null);
   const audioContextOutRef = useRef<AudioContext | null>(null);
   const liveSessionRef = useRef<any>(null);
   const nextStartTimeRef = useRef<number>(0);
   const audioSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
+  const frameIntervalRef = useRef<number | null>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -75,7 +78,6 @@ export const ChatBot: React.FC<ChatBotProps> = ({ contextData, privacyMode, mode
     scrollToBottom();
   }, [messages, isOpen, liveTranscription]);
 
-  // Handle Text-based Chat (Existing functionality)
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
 
@@ -133,106 +135,111 @@ export const ChatBot: React.FC<ChatBotProps> = ({ contextData, privacyMode, mode
     }
   };
 
-  // --- LIVE VOICE API IMPLEMENTATION ---
-
   const startLiveMode = async () => {
     if (isLiveActive) return;
     setIsLiveActive(true);
-    setLiveTranscription("Connecting to engineering expert...");
+    setLiveTranscription("Initializing Multimodal Session...");
 
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
       
-      // Setup Audio Contexts
       audioContextInRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
       audioContextOutRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
       const outputNode = audioContextOutRef.current.createGain();
       outputNode.connect(audioContextOutRef.current.destination);
 
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: true, 
+        video: { width: 640, height: 480, frameRate: 15 } 
+      });
 
-      // Build System Instruction from Context
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+      }
+
       const siteName = privacyMode ? "REDACTED_SITE" : (Array.isArray(contextData) ? "Multiple Portfolio Sites" : contextData.siteInfo.name);
       const assetSummary = Array.isArray(contextData) 
         ? contextData.map(s => `Site: ${s.siteInfo?.name}, Assets: ${s.rooms?.length || 0} rooms analyzed`).join('; ')
-        : (contextData.rooms || []).flatMap((r: any) => (r.assets || []).map((a: any) => `${a.category} (${a.condition}, Risk: ${a.riskRating})`)).join(', ');
+        : (contextData.rooms || []).flatMap((r: any) => (r.assets || []).map((a: any) => `${a.category} (${a.condition})`)).join(', ');
 
       const systemInstruction = `
-        You are an expert Engineering Asset Auditor conducting a LIVE voice consultation for: ${siteName}.
+        You are a specialized Engineering Auditor in a LIVE MULTIMODAL session for ${siteName}.
         
-        CAPTURED DATA:
-        ${assetSummary}
+        DATA CONTEXT: ${assetSummary}
 
-        YOUR TASK:
-        - Discuss the captured assets in real-time.
-        - Use ISO 55000 / Scenario 3 Logic.
-        - Be professional, technical yet concise. 
-        - Keep answers short for natural conversation.
-        - You can 'see' the data captured in the session JSON.
+        INSTRUCTIONS:
+        - You can SEE the video feed from the inspector's camera.
+        - Discuss assets as they appear in the video feed.
+        - Use your visual spatial memory to identify defects, models, or hazards.
+        - When the inspector asks "What is this?" or points the camera, use your vision to answer.
+        - Be concise and technical.
       `;
 
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         callbacks: {
           onopen: () => {
-            setLiveTranscription("Session Active. Speak now.");
+            setLiveTranscription("Vision/Audio Active. Point camera at assets.");
             
-            // Stream audio from mic to model
-            const source = audioContextInRef.current!.createMediaStreamSource(stream);
+            const audioSource = audioContextInRef.current!.createMediaStreamSource(stream);
             const scriptProcessor = audioContextInRef.current!.createScriptProcessor(4096, 1, 1);
             
-            scriptProcessor.onaudioprocess = (audioProcessingEvent) => {
-              const inputData = audioProcessingEvent.inputBuffer.getChannelData(0);
+            scriptProcessor.onaudioprocess = (e) => {
+              const inputData = e.inputBuffer.getChannelData(0);
               const l = inputData.length;
               const int16 = new Int16Array(l);
-              for (let i = 0; i < l; i++) {
-                int16[i] = inputData[i] * 32768;
-              }
-              const pcmBlob = {
-                data: encode(new Uint8Array(int16.buffer)),
-                mimeType: 'audio/pcm;rate=16000',
-              };
+              for (let i = 0; i < l; i++) int16[i] = inputData[i] * 32768;
               
               sessionPromise.then((session) => {
-                session.sendRealtimeInput({ media: pcmBlob });
+                session.sendRealtimeInput({ 
+                  media: { data: encode(new Uint8Array(int16.buffer)), mimeType: 'audio/pcm;rate=16000' }
+                });
               });
             };
             
-            source.connect(scriptProcessor);
+            audioSource.connect(scriptProcessor);
             scriptProcessor.connect(audioContextInRef.current!.destination);
+
+            // Stream Video Frames (Multimodal Live)
+            frameIntervalRef.current = window.setInterval(() => {
+              if (videoRef.current && canvasRef.current && canvasRef.current.getContext('2d')) {
+                const ctx = canvasRef.current.getContext('2d')!;
+                canvasRef.current.width = 320; 
+                canvasRef.current.height = 240;
+                ctx.drawImage(videoRef.current, 0, 0, 320, 240);
+                
+                const base64Data = canvasRef.current.toDataURL('image/jpeg', 0.6).split(',')[1];
+                sessionPromise.then((session) => {
+                  session.sendRealtimeInput({
+                    media: { data: base64Data, mimeType: 'image/jpeg' }
+                  });
+                });
+              }
+            }, 1000); // Send 1 frame per second for spatial reasoning
+
             liveSessionRef.current = { sessionPromise, scriptProcessor, stream };
           },
           onmessage: async (message: LiveServerMessage) => {
-            // Handle output transcription
             if (message.serverContent?.outputTranscription) {
-              setLiveTranscription(prev => (prev.length > 100 ? "" : prev) + message.serverContent!.outputTranscription!.text);
+              setLiveTranscription(prev => (prev.length > 80 ? "" : prev) + message.serverContent!.outputTranscription!.text);
             }
 
-            // Handle audio output
             const base64Audio = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
             if (base64Audio && audioContextOutRef.current) {
               const ctx = audioContextOutRef.current;
               nextStartTimeRef.current = Math.max(nextStartTimeRef.current, ctx.currentTime);
-              
               const audioBuffer = await decodeAudioData(decode(base64Audio), ctx, 24000, 1);
               const source = ctx.createBufferSource();
               source.buffer = audioBuffer;
               source.connect(outputNode);
-              
-              source.addEventListener('ended', () => {
-                audioSourcesRef.current.delete(source);
-              });
-
+              source.addEventListener('ended', () => audioSourcesRef.current.delete(source));
               source.start(nextStartTimeRef.current);
               nextStartTimeRef.current += audioBuffer.duration;
               audioSourcesRef.current.add(source);
             }
 
-            // Handle interruption
             if (message.serverContent?.interrupted) {
-              for (const source of audioSourcesRef.current.values()) {
-                try { source.stop(); } catch(e) {}
-              }
+              for (const s of audioSourcesRef.current.values()) try { s.stop(); } catch(e) {}
               audioSourcesRef.current.clear();
               nextStartTimeRef.current = 0;
             }
@@ -241,10 +248,7 @@ export const ChatBot: React.FC<ChatBotProps> = ({ contextData, privacyMode, mode
             console.error('Live Error:', e);
             stopLiveMode();
           },
-          onclose: () => {
-            console.log('Live Session Closed');
-            stopLiveMode();
-          }
+          onclose: () => stopLiveMode()
         },
         config: {
           responseModalities: [Modality.AUDIO],
@@ -263,21 +267,17 @@ export const ChatBot: React.FC<ChatBotProps> = ({ contextData, privacyMode, mode
   };
 
   const stopLiveMode = () => {
+    if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
     if (liveSessionRef.current) {
       const { stream, scriptProcessor } = liveSessionRef.current;
       stream.getTracks().forEach((track: any) => track.stop());
       scriptProcessor.disconnect();
       liveSessionRef.current = null;
     }
-    
-    for (const source of audioSourcesRef.current.values()) {
-      try { source.stop(); } catch(e) {}
-    }
+    for (const s of audioSourcesRef.current.values()) try { s.stop(); } catch(e) {}
     audioSourcesRef.current.clear();
-
     if (audioContextInRef.current) audioContextInRef.current.close();
     if (audioContextOutRef.current) audioContextOutRef.current.close();
-
     setIsLiveActive(false);
     setLiveTranscription("");
   };
@@ -288,138 +288,74 @@ export const ChatBot: React.FC<ChatBotProps> = ({ contextData, privacyMode, mode
         onClick={() => setIsOpen(!isOpen)}
         className={`fixed bottom-6 right-6 w-14 h-14 text-white rounded-full shadow-lg flex items-center justify-center transition-all z-50 hover:scale-110 active:scale-95 ${
             isLiveActive ? 'bg-red-500 animate-pulse' :
-            mode === 'portfolio' ? 'bg-purple-600 hover:bg-purple-700' : 
-            privacyMode ? 'bg-teal-600 hover:bg-teal-700' : 'bg-indigo-600 hover:bg-indigo-700'
+            mode === 'portfolio' ? 'bg-purple-600' : 
+            privacyMode ? 'bg-teal-600' : 'bg-indigo-600'
         }`}
-        aria-label="Open AI Chat"
       >
-        {isOpen ? (
-          <span className="material-icons">close</span>
-        ) : (
-          <span className="material-icons">{mode === 'portfolio' ? 'pie_chart' : 'engineering'}</span>
-        )}
+        {isOpen ? <span className="material-icons">close</span> : <span className="material-icons">{mode === 'portfolio' ? 'pie_chart' : 'engineering'}</span>}
       </button>
 
       {isOpen && (
-        <div className="fixed bottom-24 right-6 w-[90vw] max-w-md h-[500px] max-h-[70vh] bg-white rounded-2xl shadow-2xl flex flex-col z-50 overflow-hidden border border-gray-200 animate-fade-in-up">
+        <div className="fixed bottom-24 right-6 w-[90vw] max-w-md h-[550px] max-h-[80vh] bg-white rounded-2xl shadow-2xl flex flex-col z-50 overflow-hidden border border-gray-200 animate-fade-in-up">
           <div className={`p-4 text-white flex justify-between items-center transition-colors bg-gradient-to-r ${
               isLiveActive ? 'from-red-600 to-orange-500' :
               mode === 'portfolio' ? 'from-purple-700 to-pink-600' :
               privacyMode ? 'from-teal-700 to-green-600' : 'from-indigo-700 to-purple-700'
           }`}>
             <div className="flex items-center gap-2">
-              <span className="material-icons text-xl">
-                {isLiveActive ? 'record_voice_over' : (mode === 'portfolio' ? 'analytics' : 'psychology')}
-              </span>
+              <span className="material-icons text-xl">{isLiveActive ? 'videocam' : 'psychology'}</span>
               <div>
-                <h3 className="font-bold text-sm">
-                  {isLiveActive ? 'Live Engineering Call' : (mode === 'portfolio' ? 'Portfolio Strategist' : 'Engineering Manager')}
-                </h3>
-                <span className="text-[10px] opacity-80 block">
-                    {isLiveActive ? 'Voice Conversation Active' : (mode === 'portfolio' ? 'Accessing Firebase Cloud' : 'ISO 55001:2024 Aligned')}
-                </span>
+                <h3 className="font-bold text-sm">{isLiveActive ? 'Multimodal Live Audit' : 'Engineering Manager'}</h3>
+                <span className="text-[10px] opacity-80 block">{isLiveActive ? 'Camera + Audio Streaming' : 'ISO 55001:2024 Context'}</span>
               </div>
             </div>
             <div className="flex items-center gap-2">
-              {!isLiveActive && (
-                <button 
-                  onClick={startLiveMode} 
-                  className="bg-white/20 hover:bg-white/30 p-2 rounded-full transition-colors flex items-center justify-center"
-                  title="Talk with Data (Live Voice)"
-                >
-                  <span className="material-icons text-sm">phone</span>
-                </button>
-              )}
-              {isLiveActive && (
-                <button 
-                  onClick={stopLiveMode} 
-                  className="bg-red-700 hover:bg-red-800 p-2 rounded-full transition-colors flex items-center justify-center"
-                  title="End Call"
-                >
-                  <span className="material-icons text-sm">call_end</span>
-                </button>
-              )}
-              <div className="text-xs bg-white/20 px-2 py-1 rounded">
-                Gemini {isLiveActive ? '2.5' : '3.0'}
-              </div>
+              {!isLiveActive && <button onClick={startLiveMode} className="bg-white/20 hover:bg-white/30 p-2 rounded-full"><span className="material-icons text-sm">videocam</span></button>}
+              {isLiveActive && <button onClick={stopLiveMode} className="bg-red-700 p-2 rounded-full"><span className="material-icons text-sm">call_end</span></button>}
             </div>
           </div>
 
           <div className="flex-1 overflow-y-auto p-4 bg-gray-50 space-y-4">
-            {isLiveActive ? (
-              <div className="flex flex-col items-center justify-center h-full text-center p-6 space-y-6">
-                 <div className="relative">
-                    <div className="w-24 h-24 bg-red-100 rounded-full flex items-center justify-center animate-pulse">
-                        <span className="material-icons text-5xl text-red-600">mic</span>
+            {isLiveActive && (
+              <div className="flex flex-col items-center h-full space-y-4">
+                 <div className="relative w-full aspect-video bg-black rounded-xl overflow-hidden shadow-lg border-2 border-red-200">
+                    <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
+                    <canvas ref={canvasRef} className="hidden" />
+                    <div className="absolute top-2 left-2 bg-red-600 text-white text-[10px] px-2 py-0.5 rounded-full flex items-center gap-1">
+                       <span className="w-2 h-2 bg-white rounded-full animate-pulse"></span> LIVE FEED
                     </div>
-                    <div className="absolute inset-0 border-4 border-red-200 rounded-full animate-ping"></div>
-                 </div>
-                 <div>
-                    <h4 className="font-bold text-gray-800">Voice Consultation Active</h4>
-                    <p className="text-xs text-gray-500 mt-2">Speak naturally about the building assets. The AI has access to all detected data.</p>
                  </div>
                  {liveTranscription && (
-                    <div className="bg-white p-4 rounded-xl border border-red-100 shadow-inner w-full text-sm text-gray-700 italic min-h-[80px] flex items-center justify-center">
+                    <div className="bg-white p-3 rounded-xl border border-red-100 shadow-inner w-full text-xs text-gray-700 italic min-h-[60px]">
                        "{liveTranscription}"
                     </div>
                  )}
-                 <button 
-                    onClick={stopLiveMode}
-                    className="px-6 py-2 bg-gray-800 text-white rounded-full font-bold text-sm shadow-md hover:bg-black transition"
-                 >
-                    End Conversation
-                 </button>
+                 <p className="text-[10px] text-gray-400 text-center">Gemini is seeing your camera and hearing your voice to analyze assets in real-time.</p>
               </div>
-            ) : (
-              <>
-                {messages.map((msg) => (
-                  <div
-                    key={msg.id}
-                    className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                  >
-                    <div
-                      className={`max-w-[85%] rounded-2xl px-4 py-2 shadow-sm ${
-                        msg.role === 'user'
-                          ? `${mode === 'portfolio' ? 'bg-purple-600' : 'bg-indigo-600'} text-white rounded-br-none`
-                          : 'bg-white text-gray-800 border border-gray-100 rounded-bl-none'
-                      }`}
-                    >
-                      <p className="text-sm whitespace-pre-wrap leading-relaxed">{msg.text}</p>
-                    </div>
-                  </div>
-                ))}
-                {isLoading && (
-                  <div className="flex justify-start">
-                    <div className="bg-white px-4 py-3 rounded-2xl rounded-bl-none shadow-sm border border-gray-100 flex gap-1">
-                      <div className={`w-2 h-2 rounded-full animate-bounce ${privacyMode ? 'bg-teal-400' : 'bg-indigo-400'}`} style={{ animationDelay: '0ms' }}></div>
-                      <div className={`w-2 h-2 rounded-full animate-bounce ${privacyMode ? 'bg-teal-400' : 'bg-indigo-400'}`} style={{ animationDelay: '150ms' }}></div>
-                      <div className={`w-2 h-2 rounded-full animate-bounce ${privacyMode ? 'bg-teal-400' : 'bg-indigo-400'}`} style={{ animationDelay: '300ms' }}></div>
-                    </div>
-                  </div>
-                )}
-              </>
             )}
+            {!isLiveActive && messages.map((msg) => (
+              <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div className={`max-w-[85%] rounded-2xl px-4 py-2 shadow-sm ${msg.role === 'user' ? 'bg-indigo-600 text-white rounded-br-none' : 'bg-white text-gray-800 border rounded-bl-none'}`}>
+                  <p className="text-sm whitespace-pre-wrap">{msg.text}</p>
+                </div>
+              </div>
+            ))}
+            {isLoading && <div className="flex justify-start"><div className="bg-white px-4 py-3 rounded-2xl rounded-bl-none shadow-sm border animate-pulse">...</div></div>}
             <div ref={messagesEndRef} />
           </div>
 
           {!isLiveActive && (
-            <div className="p-4 bg-white border-t border-gray-100">
+            <div className="p-4 bg-white border-t">
               <div className="flex gap-2">
                 <input
                   type="text"
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-                  placeholder={mode === 'portfolio' ? "Compare sites, find risks..." : "Ask about remedial works..."}
-                  className={`flex-1 px-4 py-2 bg-white text-black placeholder-gray-500 border border-gray-200 rounded-full focus:outline-none focus:ring-2 focus:border-transparent text-sm ${privacyMode ? 'focus:ring-teal-500' : 'focus:ring-indigo-500'}`}
+                  placeholder="Ask about remedial works..."
+                  className="flex-1 px-4 py-2 border rounded-full text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
                 />
-                <button
-                  onClick={handleSend}
-                  disabled={isLoading || !input.trim()}
-                  className={`w-10 h-10 text-white rounded-full flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed transition-colors ${privacyMode ? 'bg-teal-600 hover:bg-teal-700' : 'bg-indigo-600 hover:bg-indigo-700'}`}
-                >
-                  <span className="material-icons text-sm">send</span>
-                </button>
+                <button onClick={handleSend} disabled={isLoading || !input.trim()} className="w-10 h-10 bg-indigo-600 text-white rounded-full flex items-center justify-center"><span className="material-icons text-sm">send</span></button>
               </div>
             </div>
           )}

@@ -2,6 +2,7 @@
 import { initializeApp } from "firebase/app";
 import { getFirestore, doc, setDoc, getDoc, collection, writeBatch, getDocs } from "firebase/firestore";
 import { getStorage, ref, uploadString, getDownloadURL } from "firebase/storage";
+import { get, set, clear, del } from 'idb-keyval';
 import { Room, SiteInfo } from '../types';
 
 // ==============================================================
@@ -47,10 +48,16 @@ export class FirebaseService {
   }
 
   async saveState(siteInfo: SiteInfo, rooms: Room[]): Promise<void> {
-    if (!isConfigured || !db) {
-      console.warn("Saving to LocalStorage (Firebase Error)");
-      localStorage.setItem('siteInfo', JSON.stringify(siteInfo));
-      localStorage.setItem('rooms', JSON.stringify(rooms));
+    // ALWAYS save to robust local IndexedDB first for offline capabilities
+    try {
+        await set('siteInfo', siteInfo);
+        await set('rooms', rooms);
+    } catch (e) {
+        console.error("Failed to save to IndexedDB:", e);
+    }
+
+    if (!isConfigured || !db || !navigator.onLine) {
+      console.warn("Saved to IndexedDB only (Offline or Config Error)");
       return;
     }
 
@@ -100,16 +107,14 @@ export class FirebaseService {
       console.log(`Phase 3: Building "Vector Search" Index (Sub-collections)...`);
 
       // 4. Save Individual Assets (For Vector Search / Layer B)
-      // FIX: Use 'let' for batch so we can re-assign it after commit
       let batch = writeBatch(db); 
       let operationCount = 0;
-      const MAX_BATCH_SIZE = 450; // Firestore limit is 500, playing safe
+      const MAX_BATCH_SIZE = 450; 
 
       for (const room of roomsForSave) {
           for (const asset of room.assets) {
               const assetRef = doc(db, `inspections/${inspectionId}/assets`, asset.id);
               
-              // This structure is optimized for AI Vector Search
               const assetRecord = {
                   ...asset,
                   roomName: room.roomName,
@@ -121,17 +126,15 @@ export class FirebaseService {
               batch.set(assetRef, assetRecord);
               operationCount++;
               
-              // Commit if batch is full and start a new one
               if (operationCount >= MAX_BATCH_SIZE) {
                   await batch.commit();
                   console.log(`Saved batch of ${operationCount} assets...`);
-                  batch = writeBatch(db); // Create new batch
+                  batch = writeBatch(db); 
                   operationCount = 0; 
               }
           }
       }
 
-      // Commit remaining
       if (operationCount > 0) {
           await batch.commit();
       }
@@ -140,22 +143,20 @@ export class FirebaseService {
 
     } catch (e) {
       console.error("❌ Cloud Sync Error:", e);
-      // Fallback
-      localStorage.setItem('siteInfo', JSON.stringify(siteInfo));
-      localStorage.setItem('rooms', JSON.stringify(rooms));
     }
   }
 
   async loadState(): Promise<{ siteInfo: SiteInfo | null, rooms: Room[] }> {
-    const localSiteInfo = localStorage.getItem('siteInfo');
-    const localRooms = localStorage.getItem('rooms');
+    // Check IndexedDB first
+    const offlineSiteInfo = await get('siteInfo');
+    const offlineRooms = await get('rooms');
     
     let result = {
-        siteInfo: localSiteInfo ? JSON.parse(localSiteInfo) : null,
-        rooms: localRooms ? JSON.parse(localRooms) : []
+        siteInfo: offlineSiteInfo || null,
+        rooms: offlineRooms || []
     };
 
-    if (isConfigured && db && result.siteInfo?.name) {
+    if (isConfigured && db && result.siteInfo?.name && navigator.onLine) {
         try {
             const inspectionId = result.siteInfo.name.trim().replace(/\s+/g, '_').toLowerCase();
             const docRef = doc(db, "inspections", inspectionId);
@@ -170,24 +171,23 @@ export class FirebaseService {
                 };
             }
         } catch (e) {
-            console.warn("⚠️ Using local data (Offline or Cloud Error)");
+            console.warn("⚠️ Using offline DB data (Cloud Error)");
         }
     }
 
     return result;
   }
 
-  // --- FETCH ALL INSPECTIONS FOR DASHBOARD ---
   async getAllInspections(): Promise<any[]> {
-      if (!isConfigured || !db) {
-          // Fallback: return the single local inspection if it exists
-          const s = localStorage.getItem('siteInfo');
-          const r = localStorage.getItem('rooms');
+      if (!isConfigured || !db || !navigator.onLine) {
+          const s = await get('siteInfo');
+          const r = await get('rooms');
           if (s && r) {
             return [{
-              siteInfo: JSON.parse(s),
-              rooms: JSON.parse(r),
-              lastUpdated: new Date().toISOString()
+              siteInfo: s,
+              rooms: r,
+              lastUpdated: new Date().toISOString(),
+              isOfflineOnly: true
             }];
           }
           return [];
@@ -204,8 +204,9 @@ export class FirebaseService {
   }
 
   async deleteDatabase(): Promise<void> {
+    await clear();
     localStorage.clear();
-    alert("Local device cache cleared. (Cloud data preserved)");
+    console.log("✅ Local Offline DB cleared");
   }
 }
 
