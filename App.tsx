@@ -5,7 +5,7 @@ import { firebaseService } from './services/firebaseService';
 import { detectAssetsWithBoundingBoxes, cropImage, summarizeConversation, analyzeDocument, extractAssetsFromVendorRegister } from './services/geminiService';
 import { ChatBot } from './components/ChatBot';
 import { format, subMonths, startOfMonth, eachMonthOfInterval, isSameMonth, parseISO } from 'date-fns';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer, AreaChart, Area } from 'recharts';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer, AreaChart, Area, PieChart, Pie, Cell } from 'recharts';
 
 // ============================================================================
 // STRICT BUILDING FABRIC & SERVICES LIST (No Furniture/Appliances)
@@ -105,6 +105,12 @@ const ASSET_CATEGORIES = [
 
 const CONDITION_OPTIONS = ['Excellent', 'Good', 'Average', 'Fair', 'Poor'];
 const RISK_OPTIONS = ['Low', 'Medium', 'High', 'Extreme'];
+const RISK_COLORS: Record<string, string> = {
+  Low: '#10B981',       // Green
+  Medium: '#EAB308',    // Yellow
+  High: '#F97316',      // Orange
+  Extreme: '#DC2626'    // Red
+};
 
 const INITIAL_ROOM_STATE: Room = {
   id: '',
@@ -125,6 +131,16 @@ function App() {
   const [simulateOffline, setSimulateOffline] = useState(false);
   const effectiveIsOnline = isOnline && !simulateOffline;
   const [syncingOfflineData, setSyncingOfflineData] = useState(false);
+  const [pendingQueueCount, setPendingQueueCount] = useState(0);
+  const [syncMessage, setSyncMessage] = useState('');
+  const [selectedMapSiteId, setSelectedMapSiteId] = useState<string>('colombo_port_warehouse_b');
+  const [mapLayerType, setMapLayerType] = useState<'streets' | 'satellite' | 'cadastral'>('satellite');
+  
+  // NEW: Address Autocomplete & Geocoding States
+  const [addressSuggestions, setAddressSuggestions] = useState<any[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [isSearchingAddress, setIsSearchingAddress] = useState(false);
+  const [addressError, setAddressError] = useState<string | null>(null);
   
   // NEW: Portfolio Data State
   const [portfolioData, setPortfolioData] = useState<any[]>([]);
@@ -162,6 +178,59 @@ function App() {
       window.removeEventListener('offline', handleOffline);
     };
   }, []);
+
+  // NEW: Automatic Background Queue Sync Side-Effect
+  useEffect(() => {
+    const checkAndSync = async () => {
+        try {
+            const count = await firebaseService.getPendingQueueCount();
+            setPendingQueueCount(count);
+            
+            if (effectiveIsOnline && count > 0 && !syncingOfflineData) {
+                setSyncingOfflineData(true);
+                setSyncMessage(`Processing ${count} offline updates...`);
+                
+                const syncedCount = await firebaseService.syncPendingQueue((progText) => {
+                    setSyncMessage(progText);
+                });
+                
+                if (syncedCount > 0) {
+                    const freshPortfolio = await firebaseService.getAllInspections();
+                    setPortfolioData(freshPortfolio);
+                    setSyncMessage(`Successfully synchronized ${syncedCount} offline inspections!`);
+                    setTimeout(() => setSyncMessage(''), 3500);
+                } else {
+                    // Check if items are held up by persistent permissions/authorization errors
+                    const errors = await firebaseService.getPendingQueueErrors();
+                    const hasPermissionError = errors.some(err => 
+                        err.toLowerCase().includes("permission") || 
+                        err.toLowerCase().includes("unauthorized") || 
+                        err.toUpperCase().includes("PERMISSION_DENIED")
+                    );
+                    if (hasPermissionError) {
+                        setSyncMessage("Sync paused: Authorization required. Drafts are safely cached locally in IndexedDB.");
+                    } else {
+                        setSyncMessage('');
+                    }
+                }
+            }
+        } catch (err) {
+            console.error("Auto background synchronization error:", err);
+            setSyncMessage('Auto sync failed. Retrying.');
+            setTimeout(() => setSyncMessage(''), 3500);
+        } finally {
+            setSyncingOfflineData(false);
+            const finalCount = await firebaseService.getPendingQueueCount();
+            setPendingQueueCount(finalCount);
+        }
+    };
+
+    checkAndSync();
+    
+    // Polling triggers to keep status counts extremely fresh
+    const syncCheckerTimer = setInterval(checkAndSync, 8000);
+    return () => clearInterval(syncCheckerTimer);
+  }, [effectiveIsOnline]);
 
   useEffect(() => {
     const loadData = async () => {
@@ -250,6 +319,71 @@ function App() {
       ...prev,
       siteInfo: { ...prev.siteInfo, [field]: value }
     }));
+  };
+
+  const handleAddressInputChange = async (value: string) => {
+    handleSiteInfoChange('address', value);
+    setAddressError(null);
+
+    if (!value || value.trim().length < 3) {
+      setAddressSuggestions([]);
+      setShowSuggestions(false);
+      return;
+    }
+
+    setIsSearchingAddress(true);
+    try {
+      const response = await fetch(
+        `https://photon.komoot.io/api?q=${encodeURIComponent(value)}&limit=5`
+      );
+      if (response.ok) {
+        const data = await response.json();
+        if (data && data.features) {
+          const suggestions = data.features.map((feat: any) => {
+            const props = feat.properties;
+            const geom = feat.geometry;
+            const parts = [
+              props.name,
+              props.street,
+              props.city || props.town,
+              props.state,
+              props.country
+            ].filter(Boolean);
+            const label = [...new Set(parts)].join(', ');
+            return {
+              label: label || props.name || 'Unnamed Locality',
+              latitude: geom.coordinates[1],
+              longitude: geom.coordinates[0],
+              raw: feat
+            };
+          }).filter((s: any) => s.label);
+          
+          setAddressSuggestions(suggestions);
+          setShowSuggestions(suggestions.length > 0);
+        } else {
+          setAddressSuggestions([]);
+          setShowSuggestions(false);
+        }
+      }
+    } catch (err) {
+      console.warn("Geocoding fetch failed:", err);
+    } finally {
+      setIsSearchingAddress(false);
+    }
+  };
+
+  const handleSelectSuggestion = (suggestion: any) => {
+    setAppState(prev => ({
+      ...prev,
+      siteInfo: {
+        ...prev.siteInfo,
+        address: suggestion.label,
+        latitude: suggestion.latitude,
+        longitude: suggestion.longitude
+      }
+    }));
+    setAddressSuggestions([]);
+    setShowSuggestions(false);
   };
 
   const saveGlobalState = () => {
@@ -368,14 +502,47 @@ function App() {
       }
   };
 
-  const startAssessment = () => {
+  const startAssessment = async () => {
+    let lat = appState.siteInfo.latitude;
+    let lng = appState.siteInfo.longitude;
+
+    if (appState.siteInfo.address && (lat === undefined || lng === undefined)) {
+      setLoadingText("Resolving site address coordinates...");
+      setProcessing(true);
+      try {
+        const response = await fetch(
+          `https://photon.komoot.io/api?q=${encodeURIComponent(appState.siteInfo.address)}&limit=1`
+        );
+        if (response.ok) {
+          const data = await response.json();
+          if (data && data.features && data.features.length > 0) {
+            const geom = data.features[0].geometry;
+            lat = geom.coordinates[1];
+            lng = geom.coordinates[0];
+          }
+        }
+      } catch (err) {
+        console.warn("Background geocoding on submit failed", err);
+      } finally {
+        setProcessing(false);
+        setLoadingText("");
+      }
+    }
+
+    const updatedSiteInfo = {
+      ...appState.siteInfo,
+      latitude: lat,
+      longitude: lng
+    };
+
     if (appState.rooms && appState.rooms.length > 0) {
         setAppState(prev => ({
             ...prev,
+            siteInfo: updatedSiteInfo,
             view: 'assessment',
             currentRoomIndex: 0
         }));
-        firebaseService.saveState(appState.siteInfo, appState.rooms);
+        firebaseService.saveState(updatedSiteInfo, appState.rooms);
         return;
     }
 
@@ -388,11 +555,12 @@ function App() {
     
     setAppState(prev => ({
       ...prev,
+      siteInfo: updatedSiteInfo,
       rooms: newRooms,
       view: 'assessment',
       currentRoomIndex: 0
     }));
-    firebaseService.saveState(appState.siteInfo, newRooms);
+    firebaseService.saveState(updatedSiteInfo, newRooms);
   };
 
   const updateCurrentRoom = (updates: Partial<Room>) => {
@@ -476,8 +644,9 @@ function App() {
   const isBuildingFabric = (category: string) => category.startsWith("Building Structural & Fabric");
 
   const detectLocation = () => {
+    setAddressError(null);
     if (!navigator.geolocation) {
-      alert("Geolocation is not supported by your browser");
+      setAddressError("Geolocation is not supported by your browser. Please type your address manually below.");
       return;
     }
     
@@ -488,6 +657,7 @@ function App() {
       async (position) => {
         const { latitude, longitude } = position.coords;
         let addressFound = false;
+        let finalAddress = "";
 
         try {
           const response = await fetch(
@@ -507,7 +677,7 @@ function App() {
                 
                 if (parts.length > 0) {
                     const uniqueParts = [...new Set(parts)];
-                    handleSiteInfoChange('address', uniqueParts.join(', '));
+                    finalAddress = uniqueParts.join(', ');
                     addressFound = true;
                 }
             }
@@ -517,8 +687,18 @@ function App() {
         }
 
         if (!addressFound) {
-            handleSiteInfoChange('address', `Lat: ${latitude.toFixed(5)}, Long: ${longitude.toFixed(5)}`);
+            finalAddress = `Lat: ${latitude.toFixed(5)}, Long: ${longitude.toFixed(5)}`;
         }
+
+        setAppState(prev => ({
+          ...prev,
+          siteInfo: {
+            ...prev.siteInfo,
+            address: finalAddress,
+            latitude,
+            longitude
+          }
+        }));
 
         setProcessing(false);
         setLoadingText("");
@@ -526,11 +706,11 @@ function App() {
       (error) => {
         console.error("Geolocation error", error);
         let msg = "Location error.";
-        if (error.code === 1) msg = "Location permission denied. Please allow location access.";
-        else if (error.code === 2) msg = "Location unavailable (GPS signal lost).";
-        else if (error.code === 3) msg = "Location request timed out.";
+        if (error.code === 1) msg = "Location permission denied. Please allow location access or type your address manually.";
+        else if (error.code === 2) msg = "Location unavailable. Please type your address manually.";
+        else if (error.code === 3) msg = "Location request timed out. Please type your address manually.";
         
-        alert(`${msg} (Details: ${error.message || 'Unknown'})`);
+        setAddressError(`${msg} (Details: ${error.message || 'Unknown'})`);
         
         setProcessing(false);
         setLoadingText("");
@@ -1052,6 +1232,33 @@ function App() {
       });
   }, [portfolioData]);
 
+  const currentAssessmentRiskDistribution = useMemo(() => {
+    const counts: Record<string, number> = {
+      Low: 0,
+      Medium: 0,
+      High: 0,
+      Extreme: 0
+    };
+    let totalAssets = 0;
+    
+    appState.rooms.forEach(room => {
+      (room.assets || []).forEach(asset => {
+        const r = asset.riskRating || 'Low';
+        if (r in counts) {
+          counts[r]++;
+          totalAssets++;
+        }
+      });
+    });
+
+    const chartData = Object.keys(counts).map(key => ({
+      name: key,
+      value: counts[key]
+    })).filter(d => d.value > 0);
+
+    return { chartData, totalAssets, counts };
+  }, [appState.rooms]);
+
   if (loading) return <div className="flex h-screen items-center justify-center text-indigo-600 animate-pulse text-xl">Loading Asset Inspector...</div>;
 
   const currentRoom = appState.rooms[appState.currentRoomIndex];
@@ -1085,154 +1292,202 @@ function App() {
 
       {editingAsset && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-              <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto flex flex-col">
+              <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
                   <div className="p-4 border-b flex justify-between items-center bg-indigo-50 rounded-t-xl">
                       <h3 className="text-lg font-bold text-indigo-800 flex items-center gap-2">
-                          <span className="material-icons">edit</span> Edit Asset
+                          <span className="material-icons">edit</span> Edit Asset Details
                       </h3>
                       <button onClick={() => setEditingAsset(null)} className="text-gray-500 hover:text-gray-700">
                           <span className="material-icons">close</span>
                       </button>
                   </div>
-                  <div className="p-6 space-y-4">
-                      <div className="bg-slate-50 border rounded-lg p-3 text-xs text-gray-500 max-h-24 overflow-y-auto mb-4">
-                        <strong className="block mb-1 text-slate-700">Governance & Audit History:</strong>
-                        <ul className="space-y-1">
-                          {(editingAsset.auditTrail || []).map((log, i) => (
-                             <li key={i} className="flex gap-2">
-                               <span className="font-mono text-slate-400">{new Date(log.timestamp).toLocaleTimeString()}</span>
-                               <span className={`font-bold ${log.actor === 'AI' ? 'text-purple-600' : 'text-blue-600'}`}>[{log.actor}]</span>
-                               <span>{log.action}: {log.details}</span>
-                             </li>
-                          ))}
-                          {(!editingAsset.auditTrail || editingAsset.auditTrail.length === 0) && <li>No history recorded.</li>}
-                        </ul>
+                  <div className="p-6 overflow-y-auto flex-1 grid grid-cols-1 md:grid-cols-12 gap-6">
+                      
+                      {/* Left Column: Visual Discovery & Audit History */}
+                      <div className="col-span-1 md:col-span-5 space-y-4">
+                          
+                          {/* Extracted Asset Image Preview Card */}
+                          <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 flex flex-col shadow-xs">
+                              <span className="text-[10px] font-bold uppercase tracking-wider bg-indigo-600 text-white rounded px-2 py-0.5 self-start mb-2 shadow-xs">
+                                  Identified Asset Image
+                              </span>
+                              
+                              {currentRoom.croppedImages[editingAsset.id] ? (
+                                  <div className="relative w-full h-48 bg-white border border-slate-200 rounded-md overflow-hidden flex items-center justify-center group shadow-inner">
+                                      <img 
+                                          src={currentRoom.croppedImages[editingAsset.id]} 
+                                          className="max-w-full max-h-full object-contain cursor-zoom-in hover:scale-[1.03] transition-transform duration-200" 
+                                          alt="Extracted Asset"
+                                          onClick={() => setPreviewImage(currentRoom.croppedImages[editingAsset.id])}
+                                          title="Click to view full screen"
+                                      />
+                                      <div className="absolute bottom-2 right-2 bg-black/60 text-white text-[10px] font-semibold px-2 py-1 rounded flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+                                          <span className="material-icons text-xs">zoom_in</span> Click to zoom
+                                      </div>
+                                  </div>
+                              ) : (
+                                  <div className="border border-dashed border-slate-300 rounded-md py-12 flex flex-col items-center justify-center text-slate-400 bg-white">
+                                      <span className="material-icons text-4xl mb-1">image_not_supported</span>
+                                      <span className="text-xs font-semibold">No cropped image available</span>
+                                  </div>
+                              )}
+
+                              {/* Toggle context image if available */}
+                              {editingAsset.sourceImageIndex !== undefined && currentRoom.images[editingAsset.sourceImageIndex] && (
+                                  <button
+                                      type="button"
+                                      onClick={() => setPreviewImage(currentRoom.images[editingAsset.sourceImageIndex!].dataUrl)}
+                                      className="mt-3 w-full text-xs text-indigo-700 hover:text-indigo-900 font-bold flex items-center justify-center gap-1.5 border border-indigo-100 bg-indigo-50/50 hover:bg-indigo-100/70 py-2 rounded-md transition duration-150 shadow-inner"
+                                  >
+                                      <span className="material-icons text-sm">filter_center_focus</span> View Context/Source Image
+                                  </button>
+                              )}
+                          </div>
+
+                          {/* Governance & Audit History */}
+                          <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs text-gray-500 max-h-36 overflow-y-auto shadow-xs">
+                              <strong className="block mb-1 text-slate-700 font-bold uppercase tracking-wider text-[10px]">Governance & Audit History:</strong>
+                              <ul className="space-y-1 divide-y divide-slate-100">
+                                  {(editingAsset.auditTrail || []).map((log, i) => (
+                                     <li key={i} className="flex gap-2 pt-1.5 first:pt-0">
+                                         <span className="font-mono text-slate-400 shrink-0">{new Date(log.timestamp).toLocaleTimeString()}</span>
+                                         <span className={`font-bold shrink-0 ${log.actor === 'AI' ? 'text-purple-600' : 'text-blue-600'}`}>[{log.actor}]</span>
+                                         <span className="text-gray-700">{log.action}: {log.details}</span>
+                                     </li>
+                                  ))}
+                                  {(!editingAsset.auditTrail || editingAsset.auditTrail.length === 0) && <li className="text-gray-400 italic">No history recorded.</li>}
+                              </ul>
+                          </div>
+
+                          {/* Risk Trajectory */}
+                          {editingAsset.riskHistory && editingAsset.riskHistory.length > 0 && (
+                              <div className="bg-white border border-indigo-100 rounded-lg p-3 shadow-xs">
+                                  <label className="block text-[10px] font-bold text-indigo-800 uppercase mb-2 flex items-center gap-1">
+                                      <span className="material-icons text-sm">timeline</span> Risk Trajectory
+                                  </label>
+                                  <div className="space-y-3 border-l-2 border-indigo-200 ml-2 pl-3 py-0.5 max-h-36 overflow-y-auto">
+                                      {editingAsset.riskHistory.map((history, i) => (
+                                          <div key={i} className="relative">
+                                              <div className={`absolute -left-[17px] top-1 w-2 h-2 rounded-full ring-4 ring-white ${history.newRisk === 'Extreme' ? 'bg-red-500' : history.newRisk === 'High' ? 'bg-orange-500' : history.newRisk === 'Medium' ? 'bg-yellow-400' : 'bg-green-500'}`}></div>
+                                              <div className="text-[9px] text-gray-400 font-mono uppercase tracking-wider">
+                                                  {new Date(history.timestamp).toLocaleString()} • <strong className={history.actor === 'AI' ? 'text-purple-600' : 'text-blue-600'}>{history.actor}</strong>
+                                              </div>
+                                              <div className="text-xs text-gray-700">
+                                                  Changed from <span className="font-medium text-gray-900">{history.previousRisk || 'Initial'}</span> to <span className={`font-bold ${history.newRisk === 'Extreme' ? 'text-red-600' : history.newRisk === 'High' ? 'text-orange-500' : history.newRisk === 'Medium' ? 'text-yellow-600' : 'text-green-600'}`}>{history.newRisk}</span>
+                                              </div>
+                                          </div>
+                                      ))}
+                                  </div>
+                              </div>
+                          )}
                       </div>
 
-                      {editingAsset.riskHistory && editingAsset.riskHistory.length > 0 && (
-                          <div className="mb-6 bg-white border border-indigo-100 rounded-lg p-4 shadow-sm">
-                              <label className="block text-xs font-bold text-indigo-800 uppercase mb-3 flex items-center gap-1">
-                                  <span className="material-icons text-sm">timeline</span> Risk Trajectory
-                              </label>
-                              <div className="space-y-4 border-l-2 border-indigo-200 ml-2 pl-4 py-1">
-                                  {editingAsset.riskHistory.map((history, i) => (
-                                      <div key={i} className="relative">
-                                          <div className={`absolute -left-[21px] top-1.5 w-2.5 h-2.5 rounded-full ring-4 ring-white ${history.newRisk === 'Extreme' ? 'bg-red-500' : history.newRisk === 'High' ? 'bg-orange-500' : history.newRisk === 'Medium' ? 'bg-yellow-400' : 'bg-green-500'}`}></div>
-                                          <div className="text-[10px] text-gray-400 mb-0.5 font-mono uppercase tracking-wider">
-                                              {new Date(history.timestamp).toLocaleString()} • <strong className={history.actor === 'AI' ? 'text-purple-600' : 'text-blue-600'}>{history.actor}</strong>
-                                          </div>
-                                          <div className="text-xs text-gray-700">
-                                              Changed from <span className="font-semibold">{history.previousRisk || 'Initial'}</span> to <span className={`font-bold ${history.newRisk === 'Extreme' ? 'text-red-600' : history.newRisk === 'High' ? 'text-orange-500' : history.newRisk === 'Medium' ? 'text-yellow-600' : 'text-green-600'}`}>{history.newRisk}</span>
-                                          </div>
-                                      </div>
-                                  ))}
+                      {/* Right Column: Editable Metadata Controls */}
+                      <div className="col-span-1 md:col-span-7 space-y-4 border-t md:border-t-0 md:border-l md:pl-6 border-slate-200">
+                          <div>
+                              <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Category</label>
+                              <select 
+                                  value={editingAsset.category}
+                                  onChange={(e) => setEditingAsset({...editingAsset, category: e.target.value})}
+                                  className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white text-sm"
+                              >
+                                  {!ASSET_CATEGORIES.includes(editingAsset.category) && <option value={editingAsset.category}>{editingAsset.category}</option>}
+                                  <option value="">Select Category...</option>
+                                  {ASSET_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                              </select>
+                          </div>
+
+                          <div>
+                              <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Description</label>
+                              <textarea 
+                                  value={editingAsset.description}
+                                  onChange={(e) => setEditingAsset({...editingAsset, description: e.target.value})}
+                                  className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm h-20"
+                                  placeholder="Detailed description..."
+                              />
+                          </div>
+
+                          <div className="grid grid-cols-4 gap-3">
+                              <div>
+                                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Condition</label>
+                                  <select 
+                                      value={editingAsset.condition}
+                                      onChange={(e) => setEditingAsset({...editingAsset, condition: e.target.value})}
+                                      className="w-full px-2 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white text-xs"
+                                  >
+                                      {CONDITION_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
+                                  </select>
+                              </div>
+                              <div>
+                                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Risk Rating</label>
+                                  <select 
+                                      value={editingAsset.riskRating || 'Low'}
+                                      onChange={(e) => setEditingAsset({...editingAsset, riskRating: e.target.value})}
+                                      className="w-full px-2 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white text-xs"
+                                  >
+                                      {RISK_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
+                                  </select>
+                              </div>
+                              <div>
+                                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Age (Yrs)</label>
+                                  <input 
+                                      type="text"
+                                      value={editingAsset.age || ''}
+                                      onChange={(e) => setEditingAsset({...editingAsset, age: e.target.value})}
+                                      className="w-full px-2 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 text-xs"
+                                      placeholder="e.g. 15"
+                                  />
+                              </div>
+                              <div>
+                                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Quantity</label>
+                                  <input 
+                                      type="text"
+                                      value={editingAsset.quantity}
+                                      onChange={(e) => setEditingAsset({...editingAsset, quantity: e.target.value})}
+                                      className="w-full px-2 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 text-xs"
+                                  />
                               </div>
                           </div>
-                      )}
 
-                      <div>
-                          <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Category</label>
-                          <select 
-                              value={editingAsset.category}
-                              onChange={(e) => setEditingAsset({...editingAsset, category: e.target.value})}
-                              className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white text-sm"
-                          >
-                              {!ASSET_CATEGORIES.includes(editingAsset.category) && <option value={editingAsset.category}>{editingAsset.category}</option>}
-                              <option value="">Select Category...</option>
-                              {ASSET_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
-                          </select>
-                      </div>
-
-                      <div>
-                          <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Description</label>
-                          <textarea 
-                              value={editingAsset.description}
-                              onChange={(e) => setEditingAsset({...editingAsset, description: e.target.value})}
-                              className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm h-24"
-                              placeholder="Detailed description..."
-                          />
-                      </div>
-
-                      <div className="grid grid-cols-4 gap-4">
-                          <div className="col-span-1">
-                              <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Condition</label>
-                              <select 
-                                  value={editingAsset.condition}
-                                  onChange={(e) => setEditingAsset({...editingAsset, condition: e.target.value})}
-                                  className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white text-sm"
-                              >
-                                  {CONDITION_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
-                              </select>
-                          </div>
-                          <div className="col-span-1">
-                              <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Risk Rating</label>
-                              <select 
-                                  value={editingAsset.riskRating || 'Low'}
-                                  onChange={(e) => setEditingAsset({...editingAsset, riskRating: e.target.value})}
-                                  className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white text-sm"
-                              >
-                                  {RISK_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
-                              </select>
-                          </div>
-                          <div className="col-span-1">
-                              <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Age (Yrs)</label>
-                              <input 
-                                  type="text"
-                                  value={editingAsset.age || ''}
-                                  onChange={(e) => setEditingAsset({...editingAsset, age: e.target.value})}
-                                  className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm"
-                                  placeholder="e.g. 15"
-                              />
-                          </div>
-                          <div className="col-span-1">
-                              <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Quantity</label>
-                              <input 
-                                  type="text"
-                                  value={editingAsset.quantity}
-                                  onChange={(e) => setEditingAsset({...editingAsset, quantity: e.target.value})}
-                                  className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm"
-                              />
-                          </div>
-                      </div>
-
-                      <div>
-                          <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Justification</label>
-                          <textarea 
-                              value={editingAsset.justification}
-                              onChange={(e) => setEditingAsset({...editingAsset, justification: e.target.value})}
-                              className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm h-20"
-                              placeholder="Why is it in this condition?"
-                          />
-                      </div>
-                      
-                      <div>
-                          <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Notes (Inspector Observations)</label>
-                          <textarea 
-                              value={editingAsset.notes || ''}
-                              onChange={(e) => setEditingAsset({...editingAsset, notes: e.target.value})}
-                              className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm h-20 bg-yellow-50"
-                              placeholder="Add any additional notes or recommendations..."
-                          />
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-4">
                           <div>
-                              <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Cost ($)</label>
-                              <input 
-                                  type="text"
-                                  value={editingAsset.cost}
-                                  onChange={(e) => setEditingAsset({...editingAsset, cost: e.target.value})}
-                                  className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm"
+                              <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Justification</label>
+                              <textarea 
+                                  value={editingAsset.justification}
+                                  onChange={(e) => setEditingAsset({...editingAsset, justification: e.target.value})}
+                                  className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm h-16"
+                                  placeholder="Why is it in this condition?"
                               />
                           </div>
+                          
                           <div>
-                              <label className="block text-xs font-bold text-gray-700 uppercase mb-1">RUL (Years)</label>
-                              <input 
-                                  type="text"
-                                  value={editingAsset.rul}
-                                  onChange={(e) => setEditingAsset({...editingAsset, rul: e.target.value})}
-                                  className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm"
+                              <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Notes (Inspector Observations)</label>
+                              <textarea 
+                                  value={editingAsset.notes || ''}
+                                  onChange={(e) => setEditingAsset({...editingAsset, notes: e.target.value})}
+                                  className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm h-16 bg-yellow-50"
+                                  placeholder="Add any additional notes or recommendations..."
                               />
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-4">
+                              <div>
+                                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Cost ($)</label>
+                                  <input 
+                                      type="text"
+                                      value={editingAsset.cost}
+                                      onChange={(e) => setEditingAsset({...editingAsset, cost: e.target.value})}
+                                      className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm"
+                                  />
+                              </div>
+                              <div>
+                                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">RUL (Years)</label>
+                                  <input 
+                                      type="text"
+                                      value={editingAsset.rul}
+                                      onChange={(e) => setEditingAsset({...editingAsset, rul: e.target.value})}
+                                      className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm"
+                                  />
+                              </div>
                           </div>
                       </div>
                   </div>
@@ -1340,94 +1595,357 @@ function App() {
 
           {viewMode === 'portfolio' ? (
               <div className="flex-1 p-4 animate-fade-in flex flex-col gap-6">
-                  {/* Searchable Inspection List */}
-                  <div className="bg-white rounded-2xl shadow-xl p-8 w-full">
-                      <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 gap-4">
-                          <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
-                              <span className="material-icons text-indigo-600">format_list_bulleted</span> 
-                              Inspections Directory
-                          </h2>
-                          <div className="flex flex-col sm:flex-row gap-3">
-                              <div className="relative">
-                                  <span className="material-icons absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400">search</span>
-                                  <input 
-                                      type="text" 
-                                      placeholder="Search site, address..." 
-                                      className="pl-10 pr-4 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 w-full sm:w-64"
-                                      value={portfolioSearch}
-                                      onChange={e => setPortfolioSearch(e.target.value)}
-                                  />
+                  
+                  {/* Realtime Connection Sync Queue Monitor Bar */}
+                  {pendingQueueCount > 0 && (
+                      <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3 animate-pulse shadow-sm">
+                          <div className="flex items-center gap-3">
+                              <div className="bg-amber-100 text-amber-800 p-2 rounded-full flex items-center justify-center">
+                                  <span className="material-icons text-xl">cloud_queue</span>
                               </div>
-                              <select 
-                                  className="border rounded-lg px-4 py-2 bg-gray-50 focus:ring-2 focus:ring-indigo-500"
-                                  value={portfolioStatusFilter}
-                                  onChange={e => setPortfolioStatusFilter(e.target.value)}
+                              <div>
+                                  <h4 className="font-bold text-sm text-gray-900">Offline Queue: {pendingQueueCount} Pending Items</h4>
+                                  <p className="text-xs text-gray-600">
+                                      {syncMessage || 'Awaiting connection restoration to push latest changes to Firestore.'}
+                                  </p>
+                              </div>
+                          </div>
+                          {effectiveIsOnline && (
+                              <button 
+                                  onClick={async () => {
+                                      setSyncingOfflineData(true);
+                                      setSyncMessage('Manual push triggered...');
+                                      const synced = await firebaseService.syncPendingQueue((p) => setSyncMessage(p));
+                                      const remaining = await firebaseService.getPendingQueueCount();
+                                      setPendingQueueCount(remaining);
+                                      const fresh = await firebaseService.getAllInspections();
+                                      setPortfolioData(fresh);
+                                      setSyncingOfflineData(false);
+                                      if (synced > 0) {
+                                          setSyncMessage(`Successfully synchronized ${synced} inspections!`);
+                                          setTimeout(() => setSyncMessage(''), 3500);
+                                      } else {
+                                          const errors = await firebaseService.getPendingQueueErrors();
+                                          const hasPermissionError = errors.some(err => 
+                                              err.toLowerCase().includes("permission") || 
+                                              err.toLowerCase().includes("unauthorized") || 
+                                              err.toUpperCase().includes("PERMISSION_DENIED")
+                                          );
+                                          if (hasPermissionError) {
+                                              setSyncMessage("Manual Sync failed: Database Write Permission Denied.");
+                                          } else {
+                                              setSyncMessage("Offline database synced locally.");
+                                              setTimeout(() => setSyncMessage(''), 3500);
+                                          }
+                                      }
+                                  }}
+                                  disabled={syncingOfflineData}
+                                  className="bg-amber-600 hover:bg-amber-700 text-white font-bold py-1.5 px-4 rounded-lg text-xs transition whitespace-nowrap shadow-sm disabled:opacity-50"
                               >
-                                  <option value="All">All Statuses</option>
-                                  <option value="Complete">Complete</option>
-                                  <option value="In Progress">In Progress</option>
-                              </select>
+                                  Force Sync Now
+                              </button>
+                          )}
+                      </div>
+                  )}
+
+                  {/* Sync Completed Notification Alert */}
+                  {syncMessage && !syncingOfflineData && !syncMessage.includes('Processing') && (
+                      <div className="bg-green-50 border border-green-200 rounded-xl p-4 flex items-center gap-3 animate-bounce shadow-sm">
+                          <div className="bg-green-100 text-green-800 p-1.5 rounded-full flex items-center justify-center">
+                              <span className="material-icons text-base">cloud_done</span>
+                          </div>
+                          <span className="text-xs font-bold text-green-900">{syncMessage}</span>
+                      </div>
+                  )}
+
+                  {/* Split Screen Master-Detail Layout */}
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 w-full items-start">
+                      
+                      {/* Left Side: Directory Table Viewer */}
+                      <div className="lg:col-span-7 bg-white rounded-2xl shadow-xl p-6 border border-gray-100">
+                          <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 gap-4">
+                              <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
+                                  <span className="material-icons text-indigo-600">format_list_bulleted</span> 
+                                  Inspections Directory
+                              </h2>
+                              <div className="flex flex-col sm:flex-row gap-3">
+                                  <div className="relative">
+                                      <span className="material-icons absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400">search</span>
+                                      <input 
+                                          type="text" 
+                                          placeholder="Search site, address..." 
+                                          className="pl-10 pr-4 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 w-full sm:w-64 text-sm"
+                                          value={portfolioSearch}
+                                          onChange={e => setPortfolioSearch(e.target.value)}
+                                      />
+                                  </div>
+                                  <select 
+                                      className="border rounded-lg px-4 py-2 bg-gray-50 text-sm focus:ring-2 focus:ring-indigo-500"
+                                      value={portfolioStatusFilter}
+                                      onChange={e => setPortfolioStatusFilter(e.target.value)}
+                                  >
+                                      <option value="All">All Statuses</option>
+                                      <option value="Complete">Complete</option>
+                                      <option value="In Progress">In Progress</option>
+                                  </select>
+                              </div>
+                          </div>
+
+                          <div className="overflow-x-auto rounded-lg border border-gray-200">
+                              <table className="w-full text-sm text-left">
+                                  <thead className="bg-gray-50 text-gray-600 font-bold uppercase text-xs">
+                                      <tr>
+                                          <th className="px-4 py-4">Status</th>
+                                          <th className="px-4 py-4">Title / Name</th>
+                                          <th className="px-4 py-4">Project ID</th>
+                                          <th className="px-4 py-4 text-right">Action</th>
+                                      </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-gray-100">
+                                      {filteredPortfolio.length > 0 ? filteredPortfolio.map((site, idx) => {
+                                          const title = site.siteInfo?.name || 'Untitled Inspection';
+                                          const isComplete = site.rooms?.every((r: any) => r.assets?.length > 0) ?? false;
+                                          const statusText = isComplete ? 'Complete' : 'In Progress';
+                                          const statusColor = isComplete ? 'bg-green-500' : 'bg-yellow-400';
+                                          const siteId = site.id || title.trim().replace(/\s+/g, '_').toLowerCase();
+                                          
+                                          // Pseudo project ID based on first word or hash
+                                          const projectId = title.split(' ')[0].replace(/[^0-9]/g, '') || String(idx + 1000);
+                                          const isSelected = selectedMapSiteId === siteId;
+
+                                          return (
+                                              <tr 
+                                                  key={siteId} 
+                                                  onClick={() => setSelectedMapSiteId(siteId)}
+                                                  className={`cursor-pointer transition-all hover:bg-slate-50 border-l-4 ${
+                                                      isSelected ? 'bg-indigo-50/50 border-indigo-500' : 'border-transparent'
+                                                  }`}
+                                              >
+                                                  <td className="px-4 py-4">
+                                                      <div className="flex items-center gap-2">
+                                                          <div className={`w-2 h-7 rounded-full ${statusColor}`}></div>
+                                                          <span className="font-semibold text-xs text-gray-700">{statusText}</span>
+                                                      </div>
+                                                  </td>
+                                                  <td className="px-4 py-4">
+                                                      <div className="font-bold text-gray-900 text-sm">{title}</div>
+                                                      <div className="text-[11px] text-gray-500">{site.siteInfo?.address}</div>
+                                                      <div className="text-[10px] text-gray-400 mt-0.5">
+                                                          Updated: {site.lastUpdated ? new Date(site.lastUpdated).toLocaleDateString() : 'N/A'}
+                                                      </div>
+                                                  </td>
+                                                  <td className="px-4 py-4 font-mono text-xs text-gray-650">
+                                                      {projectId}
+                                                  </td>
+                                                  <td className="px-4 py-4 text-right">
+                                                      <button 
+                                                          onClick={(e) => {
+                                                              e.stopPropagation();
+                                                              openInspection(site);
+                                                          }}
+                                                          className="bg-indigo-55 text-indigo-700 px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-indigo-100 transition whitespace-nowrap"
+                                                      >
+                                                          {isComplete ? 'Review' : 'Resume'}
+                                                      </button>
+                                                  </td>
+                                              </tr>
+                                          );
+                                      }) : (
+                                          <tr>
+                                              <td colSpan={4} className="px-6 py-12 text-center text-gray-400 border-dashed border-2 m-4 rounded-xl">
+                                                  No inspections match your search criteria.
+                                              </td>
+                                          </tr>
+                                      )}
+                                  </tbody>
+                              </table>
                           </div>
                       </div>
 
-                      <div className="overflow-x-auto rounded-lg border border-gray-200">
-                          <table className="w-full text-sm text-left">
-                              <thead className="bg-gray-50 text-gray-600 font-bold uppercase text-xs">
-                                  <tr>
-                                      <th className="px-6 py-4">Status</th>
-                                      <th className="px-6 py-4">Title / Name</th>
-                                      <th className="px-6 py-4">Updated</th>
-                                      <th className="px-6 py-4">Project ID</th>
-                                      <th className="px-6 py-4 text-right">Action</th>
-                                  </tr>
-                              </thead>
-                              <tbody className="divide-y divide-gray-100">
-                                  {filteredPortfolio.length > 0 ? filteredPortfolio.map((site, idx) => {
-                                      const title = site.siteInfo?.name || 'Untitled Inspection';
-                                      const isComplete = site.rooms?.every((r: any) => r.assets?.length > 0) ?? false;
-                                      const statusText = isComplete ? 'Complete' : 'In Progress';
-                                      const statusColor = isComplete ? 'bg-green-500' : 'bg-yellow-400';
-                                      
-                                      // Pseudo project ID based on first word or hash
-                                      const projectId = title.split(' ')[0].replace(/[^0-9]/g, '') || String(idx + 1000);
+                      {/* Right: GIS Asset Locator Map (Column span 5) */}
+                      <div className="lg:col-span-5 bg-white rounded-2xl shadow-xl p-6 border border-gray-100 flex flex-col gap-4 lg:sticky lg:top-4 h-[590px]">
+                          <div className="flex items-center justify-between">
+                              <h3 className="text-base font-extrabold text-gray-950 flex items-center gap-1.5">
+                                  <span className="material-icons text-indigo-600 text-xl">map</span>
+                                  GIS Asset Locator
+                              </h3>
+                              <div className="flex bg-gray-100 p-0.5 rounded-lg text-[10px] font-bold border border-gray-200">
+                                  <button 
+                                      onClick={() => setMapLayerType('streets')}
+                                      className={`px-2 py-1 rounded transition-all ${mapLayerType === 'streets' ? 'bg-white shadow text-indigo-600' : 'text-gray-500'}`}
+                                  >
+                                      Streets
+                                  </button>
+                                  <button 
+                                      onClick={() => setMapLayerType('satellite')}
+                                      className={`px-2 py-1 rounded transition-all ${mapLayerType === 'satellite' ? 'bg-white shadow text-indigo-600' : 'text-gray-500'}`}
+                                  >
+                                      Satellite
+                                  </button>
+                                  <button 
+                                      onClick={() => setMapLayerType('cadastral')}
+                                      className={`px-2 py-1 rounded transition-all ${mapLayerType === 'cadastral' ? 'bg-white shadow text-indigo-600' : 'text-gray-500'}`}
+                                  >
+                                      Cadastral
+                                  </button>
+                              </div>
+                          </div>
 
+                          {/* Map Frame Drawing */}
+                          <div className="relative flex-1 bg-slate-950 rounded-xl overflow-hidden border border-slate-800 shadow-inner">
+                              {/* Background Map Simulation */}
+                              {mapLayerType === 'satellite' ? (
+                                  <div className="absolute inset-0 bg-gradient-to-b from-slate-900 to-slate-950 opacity-95 flex flex-col items-center justify-center p-4">
+                                      {/* Grid representation */}
+                                      <div className="absolute inset-0 bg-[linear-gradient(to_right,#33415515_1px,transparent_1px),linear-gradient(to_bottom,#33415515_1px,transparent_1px)] bg-[size:18px_18px]"></div>
+                                      
+                                      {selectedMapSiteId === 'colombo_port_warehouse_b' ? (
+                                          <svg className="w-5/6 h-5/6 max-h-52 stroke-slate-700 fill-slate-900/50 opacity-80" viewBox="0 0 200 150">
+                                              <rect x="10" y="30" width="180" height="90" rx="4" strokeWidth="0.75" strokeDasharray="2 2" />
+                                              <circle cx="100" cy="75" r="45" stroke="#4f46e5" strokeWidth="0.5" strokeDasharray="1 3" />
+                                              <rect x="80" y="65" width="40" height="20" fill="#1e1b4b" stroke="#6366f1" strokeWidth="1" />
+                                              <path d="M 0,110 L 200,110" stroke="#0ea5e9" strokeWidth="1" />
+                                              <text x="12" y="125" fill="#38bdf8" fontSize="6" fontFamily="monospace">COLOMBO DEEP SHORELINE GRID SECTION C</text>
+                                          </svg>
+                                      ) : selectedMapSiteId === 'sydney_opera_house_annex' ? (
+                                          <svg className="w-5/6 h-5/6 max-h-52 stroke-slate-700 fill-slate-900/50 opacity-80" viewBox="0 0 200 150">
+                                              <path d="M10,80 C50,20 150,20 190,80" stroke="#f43f5e" strokeWidth="0.75" strokeDasharray="2 2" />
+                                              <path d="M30,120 L70,85 L110,120 Z" fill="#1e1b4b" stroke="#f43f5e" strokeWidth="1" />
+                                              <path d="M110,120 L150,85 L190,120 Z" fill="#1e1b4b" stroke="#f43f5e" strokeWidth="1" />
+                                              <path d="M 0,120 L 200,120" stroke="#0ea5e9" strokeWidth="1" />
+                                              <text x="12" y="132" fill="#38bdf8" fontSize="6" fontFamily="monospace">BENNELONG POINT MARITIME REEF GRID</text>
+                                          </svg>
+                                      ) : (
+                                          <svg className="w-5/6 h-5/6 max-h-52 stroke-slate-700 fill-slate-900/50 opacity-80" viewBox="0 0 200 150">
+                                              <rect x="30" y="25" width="140" height="100" strokeWidth="0.75" />
+                                              <line x1="100" y1="25" x2="100" y2="125" stroke="#10b981" strokeWidth="0.5" strokeDasharray="1 1" />
+                                              <line x1="30" y1="75" x2="170" y2="75" stroke="#10b981" strokeWidth="0.5" strokeDasharray="1 1" />
+                                              <circle cx="100" cy="75" r="30" stroke="#10b981" strokeWidth="0.5" />
+                                              <text x="12" y="138" fill="#38bdf8" fontSize="6" fontFamily="monospace">MELBOURNE MULTI-TIER CITY INTERSECT</text>
+                                          </svg>
+                                      )}
+                                  </div>
+                              ) : mapLayerType === 'cadastral' ? (
+                                  <div className="absolute inset-0 bg-emerald-950/20 opacity-95 flex flex-col items-center justify-center p-4">
+                                      <div className="absolute inset-0 bg-[linear-gradient(to_right,#10b98110_1px,transparent_1px),linear-gradient(to_bottom,#10b98110_1px,transparent_1px)] bg-[size:12px_12px]"></div>
+                                      <div className="border border-emerald-500/20 bg-slate-950/90 backdrop-blur p-4 rounded text-emerald-400 text-[10px] font-mono whitespace-pre text-left leading-5 shadow-lg">
+                                          CAD-MAP ID: CAD-{selectedMapSiteId === 'sydney_opera_house_annex' ? '9903' : selectedMapSiteId === 'colombo_port_warehouse_b' ? '8801' : '3304'}<br />
+                                          EST. PLOT SIZE: {selectedMapSiteId === 'sydney_opera_house_annex' ? '12,450 m²' : selectedMapSiteId === 'colombo_port_warehouse_b' ? '18,200 m²' : '9,800 m²'}<br />
+                                          SECTOR: Heavy Commercial Infrastructure<br />
+                                          RATING LEVEL: High-Trust Facility
+                                      </div>
+                                  </div>
+                              ) : (
+                                  <div className="absolute inset-0 bg-slate-950 flex flex-col items-center justify-center p-4 opacity-95">
+                                      <div className="absolute inset-0 bg-[linear-gradient(to_right,#38bdf805_1px,transparent_1px),linear-gradient(to_bottom,#38bdf805_1px,transparent_1px)] bg-[size:28px_28px]"></div>
+                                      <svg className="w-10/12 h-10/12 max-h-52 stroke-slate-800 fill-none" viewBox="0 0 200 150">
+                                          <circle cx="100" cy="75" r="60" stroke="#334155" strokeWidth="0.5" />
+                                          <circle cx="100" cy="75" r="40" stroke="#334155" strokeWidth="0.5" />
+                                          <circle cx="100" cy="75" r="20" stroke="#334155" strokeWidth="0.5" />
+                                          <line x1="100" y1="0" x2="100" y2="150" stroke="#334155" strokeWidth="0.5" />
+                                          <line x1="0" y1="75" x2="200" y2="75" stroke="#334155" strokeWidth="0.5" />
+                                      </svg>
+                                  </div>
+                              )}
+
+                              {/* Telemetry HUD */}
+                              <div className="absolute top-3 left-3 bg-slate-900/90 backdrop-blur border border-slate-800 p-2.5 rounded-lg text-[9px] font-mono text-slate-300 shadow-md text-left">
+                                  <div className="text-indigo-400 font-extrabold uppercase text-[8px] mb-1 tracking-wide">HUD Metrics</div>
+                                  {(() => {
+                                      const site = portfolioData.find(s => {
+                                          const siteId = s.id || (s.siteInfo?.name || '').trim().replace(/\s+/g, '_').toLowerCase();
+                                          return siteId === selectedMapSiteId;
+                                      });
+                                      const latVal = site?.siteInfo?.latitude;
+                                      const lngVal = site?.siteInfo?.longitude;
                                       return (
-                                          <tr key={site.id || idx} className="hover:bg-gray-50 transition items-center">
-                                              <td className="px-6 py-4">
-                                                  <div className="flex items-center gap-2">
-                                                      <div className={`w-2 h-8 rounded-full ${statusColor}`}></div>
-                                                      <span className="font-medium text-gray-700">{statusText}</span>
-                                                  </div>
-                                              </td>
-                                              <td className="px-6 py-4">
-                                                  <div className="font-bold text-gray-900">{title}</div>
-                                                  <div className="text-xs text-gray-500">{site.siteInfo?.address}</div>
-                                              </td>
-                                              <td className="px-6 py-4 text-gray-500 whitespace-nowrap">
-                                                  {site.lastUpdated ? new Date(site.lastUpdated).toLocaleString() : 'N/A'}
-                                              </td>
-                                              <td className="px-6 py-4 font-mono text-gray-600">
-                                                  {projectId}
-                                              </td>
-                                              <td className="px-6 py-4 text-right">
-                                                  <button 
-                                                      onClick={() => openInspection(site)}
-                                                      className="bg-indigo-50 text-indigo-700 px-4 py-2 rounded-lg text-xs font-bold hover:bg-indigo-100 transition whitespace-nowrap"
-                                                  >
-                                                      {isComplete ? 'Review / Re-inspect' : 'Resume'}
-                                                  </button>
-                                              </td>
-                                          </tr>
+                                          <>
+                                              <div>LAT: {latVal !== undefined ? `${Math.abs(latVal).toFixed(5)} ${latVal >= 0 ? 'N' : 'S'}` : (selectedMapSiteId === 'colombo_port_warehouse_b' ? '6.94970 N' : selectedMapSiteId === 'sydney_opera_house_annex' ? '33.85680 S' : '37.81010 S')}</div>
+                                              <div>LNG: {lngVal !== undefined ? `${Math.abs(lngVal).toFixed(5)} ${lngVal >= 0 ? 'E' : 'W'}` : (selectedMapSiteId === 'colombo_port_warehouse_b' ? '79.84370 E' : selectedMapSiteId === 'sydney_opera_house_annex' ? '151.21530 E' : '144.96280 E')}</div>
+                                          </>
                                       );
-                                  }) : (
-                                      <tr>
-                                          <td colSpan={5} className="px-6 py-12 text-center text-gray-400 border-dashed border-2 m-4 rounded-xl">
-                                              No inspections match your search criteria.
-                                          </td>
-                                      </tr>
-                                  )}
-                              </tbody>
-                          </table>
+                                  })()}
+                                  <div>ALT: 12.8m (MSL)</div>
+                                  <div className="mt-1 flex items-center gap-1 text-green-400">
+                                      <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>
+                                      TELEMETRY ACTIVE
+                                  </div>
+                              </div>
+
+                              {/* Big Interactive Floating Icon Pin */}
+                              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center">
+                                  <div className="bg-rose-500 text-white rounded-full p-2 hover:scale-110 active:scale-95 transition-transform duration-100 shadow-lg border-2 border-white animate-bounce pointer-events-auto">
+                                      <span className="material-icons text-lg flex items-center">location_on</span>
+                                  </div>
+                                  <div className="bg-slate-900/95 text-slate-100 border border-slate-800 text-[10px] font-bold px-2 py-0.5 rounded shadow mt-1 whitespace-nowrap select-none">
+                                      {portfolioData.find(s => {
+                                          const siteId = s.id || (s.siteInfo?.name || '').trim().replace(/\s+/g, '_').toLowerCase();
+                                          return siteId === selectedMapSiteId;
+                                      })?.siteInfo?.name || 'Selected Property'}
+                                  </div>
+                              </div>
+                              
+                              {/* Bottom Right Compass */}
+                              <div className="absolute bottom-3 right-3 bg-slate-900/80 backdrop-blur p-1.5 rounded-full border border-slate-800 text-slate-400 flex items-center justify-center">
+                                  <span className="material-icons text-xs" style={{ animation: 'spin 12s linear infinite' }}>explore</span>
+                              </div>
+                          </div>
+
+                          {/* Selected Site Details Overlay Box */}
+                          {(() => {
+                              const selectedSite = portfolioData.find(s => {
+                                  const siteId = s.id || (s.siteInfo?.name || '').trim().replace(/\s+/g, '_').toLowerCase();
+                                  return siteId === selectedMapSiteId;
+                              }) || portfolioData[0];
+
+                              if (!selectedSite) return <div className="text-xs text-gray-400 text-center py-4 bg-slate-50 rounded-xl">Select a site table row to focus GIS properties.</div>;
+                              
+                              const numRooms = selectedSite.rooms?.length || 0;
+                              const numAssets = selectedSite.rooms?.reduce((acc: number, r: any) => acc + (r.assets?.length || 0), 0) || 0;
+                              const extremeCount = selectedSite.rooms?.reduce((acc: number, r: any) => acc + (r.assets?.filter((a: any) => a.riskRating === 'Extreme').length || 0), 0) || 0;
+                              const highCount = selectedSite.rooms?.reduce((acc: number, r: any) => acc + (r.assets?.filter((a: any) => a.riskRating === 'High').length || 0), 0) || 0;
+
+                              return (
+                                  <div className="p-3 bg-slate-50 border border-slate-200/50 rounded-xl flex flex-col gap-2">
+                                      <div className="flex items-center justify-between">
+                                          <div className="font-bold text-gray-950 text-xs sm:text-sm truncate max-w-[190px]">{selectedSite.siteInfo?.name || 'Colombo Site'}</div>
+                                          <span className="text-[9px] font-bold text-slate-500 bg-slate-200/60 px-2 py-0.5 rounded-full min-w-max">
+                                              ISO 5500 Asset Compliance
+                                          </span>
+                                      </div>
+                                      <div className="text-xs text-gray-500 line-clamp-1 italic">
+                                          "{selectedSite.siteInfo?.notes || 'No specific facility audit records loaded.'}"
+                                      </div>
+                                      <div className="grid grid-cols-4 gap-1.5 text-center mt-1">
+                                          <div className="bg-white p-1 rounded border border-gray-100 flex flex-col justify-center">
+                                              <div className="text-[9px] text-gray-400 font-medium leading-none mb-1">Areas</div>
+                                              <div className="text-sm font-extrabold text-slate-800">{numRooms}</div>
+                                          </div>
+                                          <div className="bg-white p-1 rounded border border-gray-100 flex flex-col justify-center">
+                                              <div className="text-[9px] text-gray-400 font-medium leading-none mb-1">Assets</div>
+                                              <div className="text-sm font-extrabold text-slate-800">{numAssets}</div>
+                                          </div>
+                                          <div className="bg-white p-1 rounded border border-red-100 flex flex-col justify-center">
+                                              <div className="text-[9px] text-red-400 font-medium leading-none mb-1">Extreme</div>
+                                              <div className="text-sm font-extrabold text-red-600">{extremeCount}</div>
+                                          </div>
+                                          <div className="bg-white p-1 rounded border border-orange-100 flex flex-col justify-center">
+                                              <div className="text-[9px] text-orange-400 font-medium leading-none mb-1">High</div>
+                                              <div className="text-sm font-extrabold text-orange-600">{highCount}</div>
+                                          </div>
+                                      </div>
+                                      <div className="mt-2 text-right">
+                                          <button 
+                                              onClick={() => openInspection(selectedSite)}
+                                              className="w-full bg-indigo-600 text-white rounded-lg py-2 text-xs font-bold hover:bg-indigo-700 transition flex items-center justify-center gap-1 shadow-sm"
+                                          >
+                                              <span className="material-icons text-sm flex items-center justify-center">visibility</span>
+                                              Audit Selected Facility
+                                          </button>
+                                      </div>
+                                  </div>
+                              );
+                          })()}
                       </div>
                   </div>
 
@@ -1540,21 +2058,61 @@ function App() {
                                   </div>
                                   <div>
                                       <label className="block text-sm font-medium text-gray-700 mb-1">Site Address *</label>
-                                      <div className="flex gap-2">
-                                          <input 
-                                              className="flex-1 px-4 py-3 rounded-lg bg-gray-50 border border-gray-200 focus:ring-2 focus:ring-indigo-500 focus:bg-white transition text-black placeholder-gray-500"
-                                              placeholder="e.g. 123 Main St"
-                                              value={appState.siteInfo.address}
-                                              onChange={(e) => handleSiteInfoChange('address', e.target.value)}
-                                          />
-                                          <button 
-                                              onClick={detectLocation}
-                                              className="px-4 py-2 bg-indigo-100 text-indigo-700 rounded-lg hover:bg-indigo-200 flex items-center gap-1"
-                                              title="Detect Location"
-                                          >
-                                              <span className="material-icons">my_location</span>
-                                          </button>
+                                      <div className="relative text-left">
+                                          <div className="flex gap-2">
+                                              <div className="relative flex-1">
+                                                  <input 
+                                                      className="w-full px-4 py-3 rounded-lg bg-gray-50 border border-gray-200 focus:ring-2 focus:ring-indigo-500 focus:bg-white transition text-black placeholder-gray-500 pr-10"
+                                                      placeholder="e.g. 123 Main St"
+                                                      value={appState.siteInfo.address}
+                                                      onChange={(e) => handleAddressInputChange(e.target.value)}
+                                                      onFocus={() => {
+                                                          if (addressSuggestions.length > 0) setShowSuggestions(true);
+                                                      }}
+                                                  />
+                                                  {isSearchingAddress && (
+                                                      <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center">
+                                                          <svg className="animate-spin h-5 w-5 text-indigo-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                                          </svg>
+                                                      </div>
+                                                  )}
+                                              </div>
+                                              <button 
+                                                  onClick={detectLocation}
+                                                  className="px-4 py-2 bg-indigo-100 text-indigo-700 rounded-lg hover:bg-indigo-200 flex items-center justify-center gap-1 transition"
+                                                  title="Detect Location"
+                                              >
+                                                  <span className="material-icons">my_location</span>
+                                              </button>
+                                          </div>
+
+                                          {/* Autocomplete Suggestions Menu Dropdown */}
+                                          {showSuggestions && addressSuggestions.length > 0 && (
+                                              <div className="absolute z-50 left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-60 overflow-y-auto divide-y divide-gray-100">
+                                                  {addressSuggestions.map((suggestion, idx) => (
+                                                      <button
+                                                          key={idx}
+                                                          type="button"
+                                                          onClick={() => handleSelectSuggestion(suggestion)}
+                                                          className="w-full text-left px-4 py-3 hover:bg-indigo-50/50 text-xs text-slate-800 transition flex flex-col gap-0.5"
+                                                      >
+                                                          <div className="font-semibold text-gray-900 truncate">{suggestion.label}</div>
+                                                          <div className="font-mono text-[9px] text-gray-400">Coords: {suggestion.latitude.toFixed(4)}, {suggestion.longitude.toFixed(4)}</div>
+                                                      </button>
+                                                  ))}
+                                              </div>
+                                          )}
                                       </div>
+
+                                      {/* Dynamic Location Error Alert */}
+                                      {addressError && (
+                                          <div className="mt-2 text-xs bg-red-50 border border-red-100 text-red-700 p-2.5 rounded-lg flex items-start gap-1.5 shadow-sm">
+                                              <span className="material-icons text-red-500 text-sm mt-0.5 animate-bounce">info</span>
+                                              <span className="leading-relaxed">{addressError}</span>
+                                          </div>
+                                      )}
                                   </div>
                                   <div>
                                       <label className="block text-sm font-medium text-gray-700 mb-1">Number of Rooms</label>
@@ -1952,6 +2510,101 @@ function App() {
                               <div className="text-center mb-8">
                                   <h2 className="text-3xl font-bold text-gray-800 mb-2">Assessment Complete!</h2>
                                   <p className="text-gray-500">Your data has been saved locally. Review the Site Notes and Export.</p>
+                              </div>
+
+                              {/* Real-time Asset Risk Distribution & Visual Health Report */}
+                              <div className="border border-gray-100 bg-gray-50/50 rounded-2xl p-6 mb-8 shadow-sm">
+                                  <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider mb-4 flex items-center gap-2">
+                                      <span className="material-icons text-indigo-600 text-lg">donut_large</span>
+                                      Visual Health Report (Risk Profile)
+                                  </h3>
+                                  
+                                  {currentAssessmentRiskDistribution.totalAssets === 0 ? (
+                                      <div className="text-center py-6 text-gray-400 text-sm">
+                                          <span className="material-icons text-3xl mb-1 block">grid_view</span>
+                                          No assets logged in this assessment yet. Undergo camera audits to register assets.
+                                      </div>
+                                  ) : (
+                                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-center">
+                                          {/* Donut Chart with Centered Total Count */}
+                                          <div className="relative flex items-center justify-center h-[200px]">
+                                              <ResponsiveContainer width="100%" height="105%">
+                                                  <PieChart>
+                                                      <Pie
+                                                          data={currentAssessmentRiskDistribution.chartData}
+                                                          cx="50%"
+                                                          cy="50%"
+                                                          innerRadius={60}
+                                                          outerRadius={80}
+                                                          paddingAngle={4}
+                                                          dataKey="value"
+                                                      >
+                                                          {currentAssessmentRiskDistribution.chartData.map((entry, index) => (
+                                                              <Cell key={`cell-${index}`} fill={RISK_COLORS[entry.name] || '#10B981'} />
+                                                          ))}
+                                                      </Pie>
+                                                      <RechartsTooltip 
+                                                          formatter={(value: any) => [`${value} Asset(s)`, 'Count']}
+                                                          contentStyle={{ borderRadius: '8px', border: '1px solid #E2E8F0', fontSize: '12px' }}
+                                                      />
+                                                  </PieChart>
+                                              </ResponsiveContainer>
+                                              
+                                              {/* Absolute Center Text */}
+                                              <div className="absolute flex flex-col items-center justify-center pointer-events-none">
+                                                  <span className="text-3xl font-extrabold text-gray-800 leading-none">
+                                                      {currentAssessmentRiskDistribution.totalAssets}
+                                                  </span>
+                                                  <span className="text-[10px] text-gray-400 uppercase font-bold tracking-wider mt-1">
+                                                      Total Assets
+                                                  </span>
+                                              </div>
+                                          </div>
+                                          
+                                          {/* Risk Distribution Details & Insight */}
+                                          <div className="space-y-3">
+                                              <div className="space-y-1.5">
+                                                  {RISK_OPTIONS.map((risk: string) => { const count = (currentAssessmentRiskDistribution.counts as Record<string, number>)[risk] || 0;
+                                                      const percentage = currentAssessmentRiskDistribution.totalAssets > 0 
+                                                          ? Math.round((count / currentAssessmentRiskDistribution.totalAssets) * 100) 
+                                                          : 0;
+                                                      return (
+                                                          <div key={risk} className="flex items-center justify-between text-xs text-gray-600">
+                                                              <div className="flex items-center gap-2">
+                                                                  <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: RISK_COLORS[risk] }}></span>
+                                                                  <span className="font-semibold text-gray-700">{risk} Risk:</span>
+                                                              </div>
+                                                              <span className="font-mono text-gray-500 font-medium">
+                                                                  {count} ({percentage}%)
+                                                              </span>
+                                                          </div>
+                                                      );
+                                                  })}
+                                              </div>
+                                              
+                                              <div className="pt-3 border-t border-gray-100">
+                                                  <p className="text-[11px] leading-relaxed text-gray-500 font-medium">
+                                                      {currentAssessmentRiskDistribution.counts.Extreme > 0 ? (
+                                                          <span className="text-red-600 flex items-start gap-1">
+                                                              <span className="material-icons text-xs mt-0.5">warning</span>
+                                                              <span><strong>Action Required:</strong> Critical operations attention needed for {currentAssessmentRiskDistribution.counts.Extreme} extreme risk item(s).</span>
+                                                          </span>
+                                                      ) : currentAssessmentRiskDistribution.counts.High > 0 ? (
+                                                          <span className="text-orange-600 flex items-start gap-1">
+                                                              <span className="material-icons text-xs mt-0.5">warning</span>
+                                                              <span><strong>Alert:</strong> Schedule remediation works for {currentAssessmentRiskDistribution.counts.High} high risk asset(s).</span>
+                                                          </span>
+                                                      ) : (
+                                                          <span className="text-green-600 flex items-start gap-1">
+                                                              <span className="material-icons text-xs mt-0.5">check_circle</span>
+                                                              <span><strong>Stable:</strong> Site exhibits a low risk-density profile. Ready to export.</span>
+                                                          </span>
+                                                      )}
+                                                  </p>
+                                              </div>
+                                          </div>
+                                      </div>
+                                  )}
                               </div>
 
                               <div className="mb-8">

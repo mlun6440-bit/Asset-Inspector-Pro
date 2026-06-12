@@ -32,6 +32,188 @@ try {
     console.error("Firebase Initialization Error:", e);
 }
 
+// Seeded preloaded inspections representing experimental properties in Sri Lanka and Australia
+const SEEDED_INSPECTIONS: any[] = [
+  {
+    id: "colombo_port_warehouse_b",
+    siteInfo: {
+      name: "Colombo Port Warehouse B",
+      address: "Berth 5, Colombo Port, Sri Lanka",
+      numRooms: 2,
+      notes: "Heavy industrial shipment facility. Salt air hum with corrosive impact on electrical switchboards.",
+      latitude: 6.9497,
+      longitude: 79.8437
+    },
+    rooms: [
+      {
+        id: "room_c1",
+        buildingName: "Colombo Port Warehouse B",
+        roomName: "Main Loading Dock",
+        images: [],
+        croppedImages: {},
+        comments: "Busy vehicle access slab; structural expansion joints showing dirt wear.",
+        assets: [
+          {
+            id: "asset_c1_1",
+            name: "Overhead Shutting Gates",
+            category: "Grounds & Gardens,Fences & Gates",
+            description: "Industrial steel folding door shutter. Motorised chains are heavily dry rusted.",
+            condition: "Fair",
+            riskRating: "High",
+            justification: "Wear on primary winding gears may lead to operational failure and physical crush hazards.",
+            quantity: 1,
+            cost: "6800",
+            age: "12",
+            rul: "3",
+            verified: true,
+            aiDetected: true,
+            auditTrail: [
+              { timestamp: Date.now() - 86400000, actor: "AI", action: "Detected Asset", details: "Initial visual identification from satellite thermal feed." }
+            ]
+          }
+        ]
+      },
+      {
+        id: "room_c2",
+        buildingName: "Colombo Port Warehouse B",
+        roomName: "Main Distribution Valve Room",
+        images: [],
+        croppedImages: {},
+        comments: "DB boards run high thermal levels during active shift hours.",
+        assets: [
+          {
+            id: "asset_c2_1",
+            name: "Industrial Main Power Switchboard DB-01",
+            category: "Electrical switchboards",
+            description: "Distribution board casing showing slight thermal scorch marking on primary breaker connections.",
+            condition: "Poor",
+            riskRating: "Extreme",
+            justification: "Risk of arc flashover or panel fire without urgent inspection or connection tight-ups.",
+            quantity: 1,
+            cost: "25000",
+            age: "18",
+            rul: "1",
+            verified: true,
+            aiDetected: true,
+            auditTrail: [
+              { timestamp: Date.now() - 36400000, actor: "AI", action: "Flagged Risk", details: "Elevated risk rating based on thermodynamic and humidity parameters." }
+            ]
+          }
+        ]
+      }
+    ],
+    lastUpdated: new Date().toISOString()
+  },
+  {
+    id: "sydney_opera_house_annex",
+    siteInfo: {
+      name: "Sydney Opera House Annex",
+      address: "Bennelong Point, Sydney NSW 2000, Australia",
+      numRooms: 2,
+      notes: "Heritage administration wing. Heavy requirements for architectural timber finish maintenance.",
+      latitude: -33.8568,
+      longitude: 151.2153
+    },
+    rooms: [
+      {
+        id: "room_s1",
+        buildingName: "Sydney Opera House Annex",
+        roomName: "Green Room Main Stage Entrance",
+        images: [],
+        croppedImages: {},
+        comments: "Good general appearance, but floor timber lifting slightly.",
+        assets: [
+          {
+            id: "asset_s1_1",
+            name: "Polished Parquet Floor Panels",
+            category: "Grounds & Gardens,Pathways & Paving",
+            description: "Australian Oak tongue-and-groove timber flooring. Some surface lifting near hydration cooler.",
+            condition: "Average",
+            riskRating: "Medium",
+            justification: "Plank edge elevation forms a minor trip hazard for high priority talent walkway.",
+            quantity: 45,
+            cost: "12500",
+            age: "45",
+            rul: "15",
+            verified: true,
+            aiDetected: false,
+            auditTrail: []
+          }
+        ]
+      },
+      {
+        id: "room_s2",
+        buildingName: "Sydney Opera House Annex",
+        roomName: "Plant Room Mechanical Vent",
+        images: [],
+        croppedImages: {},
+        comments: "Vibration is high near the damper assembly.",
+        assets: [
+          {
+            id: "asset_s2_1",
+            name: "Axial Mechanical Exhaust Unit Motor 3",
+            category: "HVAC",
+            description: "Duct motor blower assembly. Heavy rattling audible under full peak velocity.",
+            condition: "Fair",
+            riskRating: "High",
+            justification: "Persistent structural vibrating risks snapping the steel mounting frame brackets.",
+            quantity: 1,
+            cost: "5200",
+            age: "11",
+            rul: "2",
+            verified: true,
+            aiDetected: true,
+            auditTrail: []
+          }
+        ]
+      }
+    ],
+    lastUpdated: new Date().toISOString()
+  },
+  {
+    id: "melbourne_central_hub",
+    siteInfo: {
+      name: "Melbourne Central Hub",
+      address: "211 La Trobe St, Melbourne VIC 3000, Australia",
+      numRooms: 1,
+      notes: "Active commercial retail facility. General public fire exit accessways require daily tracking.",
+      latitude: -37.8101,
+      longitude: 144.9628
+    },
+    rooms: [
+      {
+        id: "room_m1",
+        buildingName: "Melbourne Central Hub",
+        roomName: "Plaza Utility HVAC Vent",
+        images: [],
+        croppedImages: {},
+        comments: "Routine emergency devices checked.",
+        assets: [
+          {
+            id: "asset_m1_1",
+            name: "Pressurised CO2 Cylinder 5kg",
+            category: "Fire Extinguishers",
+            description: "Fire emergency device. Weight check reveals empty chamber; activation pin has been removed.",
+            condition: "Poor",
+            riskRating: "High",
+            justification: "Completely inoperable asset during initial emergency reaction. Violation of fire safety regulations.",
+            quantity: 1,
+            cost: "180",
+            age: "9",
+            rul: "1",
+            verified: true,
+            aiDetected: false,
+            auditTrail: [
+              { timestamp: Date.now() - 43200000, actor: "USER", action: "Flagged Asset", details: "Manual inspection flag raised during walk-by site audit." }
+            ]
+          }
+        ]
+      }
+    ],
+    lastUpdated: new Date().toISOString()
+  }
+];
+
 export class FirebaseService {
   
   // Helper to upload a single base64 image to Firebase Storage
@@ -42,112 +224,254 @@ export class FirebaseService {
         await uploadString(storageRef, base64, 'data_url');
         return await getDownloadURL(storageRef);
     } catch (e) {
-        console.error("Image Upload Failed:", e);
+        const errorMsg = e instanceof Error ? e.message : String(e);
+        console.warn("Storage upload deferred (using robust base64 local fallback):", errorMsg);
         return base64; 
     }
   }
 
+  // Robust saveState that registers offline pending queue if offline
   async saveState(siteInfo: SiteInfo, rooms: Room[]): Promise<void> {
-    // ALWAYS save to robust local IndexedDB first for offline capabilities
+    const inspectionId = siteInfo.name.trim().replace(/\s+/g, '_').toLowerCase() || 'draft_inspection';
+    
+    // 1. Save locally for current working draft
     try {
         await set('siteInfo', siteInfo);
         await set('rooms', rooms);
     } catch (e) {
-        console.error("Failed to save to IndexedDB:", e);
+        console.error("Failed to save draft to IndexedDB:", e);
     }
 
-    if (!isConfigured || !db || !navigator.onLine) {
-      console.warn("Saved to IndexedDB only (Offline or Config Error)");
-      return;
-    }
-
+    // 2. Save inside general list map of all local inspections
     try {
-      // 1. Define Hierarchy
-      const inspectionId = siteInfo.name.trim().replace(/\s+/g, '_').toLowerCase() || 'draft_inspection';
-      const inspectionDocRef = doc(db, "inspections", inspectionId);
-      
-      console.log(`Phase 1: Uploading Images to Cloud Bucket...`);
-      
-      // 2. Image Processing (Upload Base64 -> Get URL)
-      // We process a clone to avoid mutating React state directly
-      const roomsForSave = JSON.parse(JSON.stringify(rooms)); 
-
-      for (const room of roomsForSave) {
-          // Upload Room Images
-          if (room.images) {
-              for (let i = 0; i < room.images.length; i++) {
-                  const img = room.images[i];
-                  if (img.dataUrl && img.dataUrl.startsWith('data:image')) {
-                      const cloudPath = `inspections/${inspectionId}/${room.id}/${img.id}.jpg`;
-                      img.dataUrl = await this.uploadImage(img.dataUrl, cloudPath);
-                  }
-              }
-          }
-          // Upload Cropped Asset Images
-          if (room.croppedImages) {
-              for (const [assetId, dataUrl] of Object.entries(room.croppedImages)) {
-                  if (typeof dataUrl === 'string' && dataUrl.startsWith('data:image')) {
-                      const cloudPath = `inspections/${inspectionId}/${room.id}/assets/${assetId}_crop.jpg`;
-                      room.croppedImages[assetId] = await this.uploadImage(dataUrl, cloudPath);
-                  }
-              }
-          }
-      }
-
-      console.log(`Phase 2: Saving "Memory" (Main Document)...`);
-      
-      // 3. Save Main Document (For App Performance)
-      await setDoc(inspectionDocRef, {
-        siteInfo,
-        rooms: roomsForSave,
-        lastUpdated: new Date().toISOString(),
-        device: navigator.userAgent
-      }, { merge: true });
-
-      console.log(`Phase 3: Building "Vector Search" Index (Sub-collections)...`);
-
-      // 4. Save Individual Assets (For Vector Search / Layer B)
-      let batch = writeBatch(db); 
-      let operationCount = 0;
-      const MAX_BATCH_SIZE = 450; 
-
-      for (const room of roomsForSave) {
-          for (const asset of room.assets) {
-              const assetRef = doc(db, `inspections/${inspectionId}/assets`, asset.id);
-              
-              const assetRecord = {
-                  ...asset,
-                  roomName: room.roomName,
-                  buildingName: siteInfo.name,
-                  timestamp: new Date().toISOString(),
-                  ai_search_text: `Asset: ${asset.category}. Condition: ${asset.condition}. Description: ${asset.description}. Justification: ${asset.justification}. Cost: ${asset.cost}.`
-              };
-
-              batch.set(assetRef, assetRecord);
-              operationCount++;
-              
-              if (operationCount >= MAX_BATCH_SIZE) {
-                  await batch.commit();
-                  console.log(`Saved batch of ${operationCount} assets...`);
-                  batch = writeBatch(db); 
-                  operationCount = 0; 
-              }
-          }
-      }
-
-      if (operationCount > 0) {
-          await batch.commit();
-      }
-      
-      console.log(`✅ Full Cloud Sync Complete: inspections/${inspectionId}`);
-
+        const localInspections = await get('all_local_inspections') || {};
+        localInspections[inspectionId] = {
+            id: inspectionId,
+            siteInfo,
+            rooms,
+            lastUpdated: new Date().toISOString()
+        };
+        await set('all_local_inspections', localInspections);
+        console.log(`Updated local database for "${siteInfo.name}"`);
     } catch (e) {
-      console.error("❌ Cloud Sync Error:", e);
+        console.error("Failed to save to local inspections catalog:", e);
+    }
+
+    // 3. Queue up sync action if offline or server is unconfigured
+    if (!isConfigured || !db || !navigator.onLine) {
+        try {
+            const pendingQueue = await get('pending_sync_queue') || {};
+            pendingQueue[inspectionId] = { siteInfo, rooms, queuedAt: new Date().toISOString() };
+            await set('pending_sync_queue', pendingQueue);
+            console.warn(`Saved locally. queued "${siteInfo.name}" for sync background pushing.`);
+        } catch (e) {
+            console.error("Failed to store in offline sync queue:", e);
+        }
+        return;
+    }
+
+    // 4. Trigger cloud-sync directly
+    try {
+        await this.saveStateToCloudDirect(siteInfo, rooms);
+        
+        // Ensure it is deleted from the pending sync queue since it has synced
+        const pendingQueue = await get('pending_sync_queue') || {};
+        if (pendingQueue[inspectionId]) {
+            delete pendingQueue[inspectionId];
+            await set('pending_sync_queue', pendingQueue);
+        }
+    } catch (e) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        console.warn("Cloud direct save deferred (permissions/offline). Pushing to sync queue:", errMsg);
+        const pendingQueue = await get('pending_sync_queue') || {};
+        pendingQueue[inspectionId] = { 
+            siteInfo, 
+            rooms, 
+            queuedAt: new Date().toISOString(),
+            retryCount: 1,
+            lastError: errMsg,
+            lastAttempt: new Date().toISOString()
+        };
+        await set('pending_sync_queue', pendingQueue);
     }
   }
 
+  // Main cloud sync logic
+  async saveStateToCloudDirect(siteInfo: SiteInfo, rooms: Room[]): Promise<void> {
+    if (!isConfigured || !db) throw new Error("Firebase not initialized");
+    
+    const inspectionId = siteInfo.name.trim().replace(/\s+/g, '_').toLowerCase() || 'draft_inspection';
+    const inspectionDocRef = doc(db, "inspections", inspectionId);
+    
+    console.log(`Cloud Sync Initiated: ${siteInfo.name}`);
+    
+    const roomsForSave = JSON.parse(JSON.stringify(rooms)); 
+
+    for (const room of roomsForSave) {
+        if (room.images) {
+            for (let i = 0; i < room.images.length; i++) {
+                const img = room.images[i];
+                if (img.dataUrl && img.dataUrl.startsWith('data:image')) {
+                    const cloudPath = `inspections/${inspectionId}/${room.id}/${img.id}.jpg`;
+                    img.dataUrl = await this.uploadImage(img.dataUrl, cloudPath);
+                }
+            }
+        }
+        if (room.croppedImages) {
+            for (const [assetId, dataUrl] of Object.entries(room.croppedImages)) {
+                if (typeof dataUrl === 'string' && dataUrl.startsWith('data:image')) {
+                    const cloudPath = `inspections/${inspectionId}/${room.id}/assets/${assetId}_crop.jpg`;
+                    room.croppedImages[assetId] = await this.uploadImage(dataUrl, cloudPath);
+                }
+            }
+        }
+    }
+
+    await setDoc(inspectionDocRef, {
+      siteInfo,
+      rooms: roomsForSave,
+      lastUpdated: new Date().toISOString(),
+      device: navigator.userAgent
+    }, { merge: true });
+
+    let batch = writeBatch(db); 
+    let operationCount = 0;
+    const MAX_BATCH_SIZE = 450; 
+
+    for (const room of roomsForSave) {
+        for (const asset of room.assets) {
+            const assetRef = doc(db, `inspections/${inspectionId}/assets`, asset.id);
+            
+            const assetRecord = {
+                ...asset,
+                roomName: room.roomName,
+                buildingName: siteInfo.name,
+                timestamp: new Date().toISOString(),
+                ai_search_text: `Asset: ${asset.category}. Condition: ${asset.condition}. Description: ${asset.description}. Justification: ${asset.justification}. Cost: ${asset.cost}.`
+            };
+
+            batch.set(assetRef, assetRecord);
+            operationCount++;
+            
+            if (operationCount >= MAX_BATCH_SIZE) {
+                await batch.commit();
+                batch = writeBatch(db); 
+                operationCount = 0; 
+            }
+        }
+    }
+
+    if (operationCount > 0) {
+        await batch.commit();
+    }
+    
+    console.log(`✅ Fully Synced to Firebase: inspections/${inspectionId}`);
+  }
+
+  // Triggered when client restores connection
+  async syncPendingQueue(onProgress?: (progressText: string) => void): Promise<number> {
+    if (!isConfigured || !db || !navigator.onLine) return 0;
+
+    let syncedItemsCount = 0;
+    try {
+        const pendingQueue = await get('pending_sync_queue') || {};
+        const entries = Object.entries(pendingQueue);
+        if (entries.length === 0) return 0;
+
+        console.log(`📡 Background syncing initiated for ${entries.length} inspections...`);
+
+        for (const [inspectionId, item] of entries) {
+            const typedItem = item as { 
+                siteInfo: SiteInfo; 
+                rooms: Room[]; 
+                retryCount?: number; 
+                lastError?: string; 
+                lastAttempt?: string; 
+            };
+            
+            const retryCount = typedItem.retryCount || 0;
+            const lastAttempt = typedItem.lastAttempt ? new Date(typedItem.lastAttempt).getTime() : 0;
+            const now = Date.now();
+            
+            // Check if this queued item is blocked by persistent permission/auth errors
+            const isPermissionError = typedItem.lastError && (
+                typedItem.lastError.toLowerCase().includes("permission") || 
+                typedItem.lastError.toLowerCase().includes("unauthorized") || 
+                typedItem.lastError.toUpperCase().includes("PERMISSION_DENIED")
+            );
+
+            if (isPermissionError && retryCount >= 2) {
+                // Wait at least 3 minutes (180,000 ms) before trying again to prevent infinite error loops and quota exhaustion
+                if (now - lastAttempt < 180000) {
+                    console.log(`Skipping automatic background sync retry for "${typedItem.siteInfo.name}" to prevent persistent authorization loops.`);
+                    continue;
+                }
+            } else if (retryCount >= 5) {
+                // Cooldown for any general failing sync (e.g. 1 minute)
+                if (now - lastAttempt < 60000) {
+                    continue;
+                }
+            }
+
+            if (onProgress) {
+                onProgress(`Syncing "${typedItem.siteInfo.name}"...`);
+            }
+            
+            try {
+                await this.saveStateToCloudDirect(typedItem.siteInfo, typedItem.rooms);
+                syncedItemsCount++;
+                
+                // Delete key successfully uploaded
+                const updatedQueue = await get('pending_sync_queue') || {};
+                delete updatedQueue[inspectionId];
+                await set('pending_sync_queue', updatedQueue);
+                console.log(`✅ Fully Synchronized "${typedItem.siteInfo.name}" to Cloud.`);
+            } catch (err: any) {
+                const errMsg = err instanceof Error ? err.message : String(err);
+                console.warn(`Sync attempt failed for "${typedItem.siteInfo.name}":`, errMsg);
+                
+                // Update queue item with error details and increment retry count without crashing the sync cycle
+                const updatedQueue = await get('pending_sync_queue') || {};
+                if (updatedQueue[inspectionId]) {
+                    updatedQueue[inspectionId] = {
+                        ...updatedQueue[inspectionId],
+                        retryCount: retryCount + 1,
+                        lastError: errMsg,
+                        lastAttempt: new Date().toISOString()
+                    };
+                    await set('pending_sync_queue', updatedQueue);
+                }
+            }
+        }
+    } catch (e) {
+        console.error("Failed to complete automatic background sync process:", e);
+    }
+    return syncedItemsCount;
+  }
+
+  // Get count of queued items not pushed to Firebase
+  async getPendingQueueCount(): Promise<number> {
+      try {
+          const pendingQueue = await get('pending_sync_queue') || {};
+          return Object.keys(pendingQueue).length;
+      } catch (e) {
+          return 0;
+      }
+  }
+
+  // Get list of lastError messages recorded in the queue items
+  async getPendingQueueErrors(): Promise<string[]> {
+      try {
+          const pendingQueue = await get('pending_sync_queue') || {};
+          return Object.values(pendingQueue)
+              .map((item: any) => item.lastError)
+              .filter((err): err is string => !!err);
+      } catch (e) {
+          return [];
+      }
+  }
+
   async loadState(): Promise<{ siteInfo: SiteInfo | null, rooms: Room[] }> {
-    // Check IndexedDB first
     const offlineSiteInfo = await get('siteInfo');
     const offlineRooms = await get('rooms');
     
@@ -179,27 +503,40 @@ export class FirebaseService {
   }
 
   async getAllInspections(): Promise<any[]> {
+      let localInspections = await get('all_local_inspections') || {};
+
+      // Seed mock inspections if empty so user has high-quality demo data out-of-the-box
+      if (Object.keys(localInspections).length === 0) {
+          console.log("🌱 Database is empty. Seeding initial properties for Sri Lanka and Australia...");
+          localInspections = {};
+          SEEDED_INSPECTIONS.forEach(ins => {
+              localInspections[ins.id] = ins;
+          });
+          await set('all_local_inspections', localInspections);
+      }
+
+      const offlineList = Object.values(localInspections);
+
       if (!isConfigured || !db || !navigator.onLine) {
-          const s = await get('siteInfo');
-          const r = await get('rooms');
-          if (s && r) {
-            return [{
-              siteInfo: s,
-              rooms: r,
-              lastUpdated: new Date().toISOString(),
-              isOfflineOnly: true
-            }];
-          }
-          return [];
+          return offlineList;
       }
 
       try {
           const colRef = collection(db, "inspections");
           const snapshot = await getDocs(colRef);
-          return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+          const cloudList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+          // Merge cloud inspections into local inspections list (keep offline available)
+          const localMap = { ...localInspections };
+          cloudList.forEach((ins: any) => {
+              localMap[ins.id] = ins;
+          });
+          await set('all_local_inspections', localMap);
+
+          return Object.values(localMap);
       } catch (e) {
-          console.error("Error fetching inspections:", e);
-          return [];
+          console.error("Error fetching inspections from Firestore:", e);
+          return offlineList;
       }
   }
 

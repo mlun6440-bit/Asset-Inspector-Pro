@@ -57,6 +57,8 @@ export const ChatBot: React.FC<ChatBotProps> = ({ contextData, privacyMode, mode
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [liveTranscription, setLiveTranscription] = useState('');
+  const [liveObservations, setLiveObservations] = useState<Array<{id: string, type: string, description: string, condition: string, riskRating: string, time: Date}>>([]);
+
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   
@@ -141,7 +143,14 @@ export const ChatBot: React.FC<ChatBotProps> = ({ contextData, privacyMode, mode
     setLiveTranscription("Initializing Multimodal Session...");
 
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+      const ai = new GoogleGenAI({ 
+        apiKey: process.env.GEMINI_API_KEY || process.env.API_KEY || '',
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
+          }
+        }
+      });
       
       audioContextInRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
       audioContextOutRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
@@ -169,14 +178,16 @@ export const ChatBot: React.FC<ChatBotProps> = ({ contextData, privacyMode, mode
 
         INSTRUCTIONS:
         - You can SEE the video feed from the inspector's camera.
-        - Discuss assets as they appear in the video feed.
-        - Use your visual spatial memory to identify defects, models, or hazards.
-        - When the inspector asks "What is this?" or points the camera, use your vision to answer.
-        - Be concise and technical.
+        - PROACTIVELY analyze the video stream for potential hazards, asset identification, and condition assessments as the inspector moves through the site.
+        - CRITICAL: Maintain a mental visual map of the site. If you see an asset you have already logged from a different angle, DO NOT log it again.
+        - Deduplicate assets across frames. Only use 'log_observation' for NEW physical items or significant NEW hazards.
+        - IMPORTANT: Do not wait for the user to ask questions. Continually scan for and call out assets or safety hazards.
+        - When you spot a NEW asset or hazard, use the 'log_observation' tool to log it immediately, then briefly verbally acknowledge what you just logged.
+        - Provide immediate, concise, and technical feedback.
       `;
 
       const sessionPromise = ai.live.connect({
-        model: 'gemini-2.5-flash-native-audio-preview-12-2025',
+        model: 'gemini-3.1-flash-live-preview',
         callbacks: {
           onopen: () => {
             setLiveTranscription("Vision/Audio Active. Point camera at assets.");
@@ -192,7 +203,7 @@ export const ChatBot: React.FC<ChatBotProps> = ({ contextData, privacyMode, mode
               
               sessionPromise.then((session) => {
                 session.sendRealtimeInput({ 
-                  media: { data: encode(new Uint8Array(int16.buffer)), mimeType: 'audio/pcm;rate=16000' }
+                  audio: { data: encode(new Uint8Array(int16.buffer)), mimeType: 'audio/pcm;rate=16000' }
                 });
               });
             };
@@ -204,22 +215,68 @@ export const ChatBot: React.FC<ChatBotProps> = ({ contextData, privacyMode, mode
             frameIntervalRef.current = window.setInterval(() => {
               if (videoRef.current && canvasRef.current && canvasRef.current.getContext('2d')) {
                 const ctx = canvasRef.current.getContext('2d')!;
-                canvasRef.current.width = 320; 
-                canvasRef.current.height = 240;
-                ctx.drawImage(videoRef.current, 0, 0, 320, 240);
+                canvasRef.current.width = 480; // slightly higher res for better spatial memory
+                canvasRef.current.height = 360;
+                ctx.drawImage(videoRef.current, 0, 0, 480, 360);
                 
-                const base64Data = canvasRef.current.toDataURL('image/jpeg', 0.6).split(',')[1];
+                const base64Data = canvasRef.current.toDataURL('image/jpeg', 0.55).split(',')[1];
                 sessionPromise.then((session) => {
                   session.sendRealtimeInput({
-                    media: { data: base64Data, mimeType: 'image/jpeg' }
+                    video: { data: base64Data, mimeType: 'image/jpeg' }
                   });
                 });
               }
-            }, 1000); // Send 1 frame per second for spatial reasoning
+            }, 1000); 
 
             liveSessionRef.current = { sessionPromise, scriptProcessor, stream };
           },
           onmessage: async (message: LiveServerMessage) => {
+            if (message.serverContent?.modelTurn?.parts) {
+              message.serverContent.modelTurn.parts.forEach((part: any) => {
+                 if (part.functionCall && part.functionCall.name === 'log_observation') {
+                    const args = part.functionCall.args as any;
+                    
+                    // Client-side fuzzy deduplication
+                    setLiveObservations(prev => {
+                      const isDuplicate = prev.some(obs => 
+                        obs.type === args.type && 
+                        (obs.description.toLowerCase().includes(args.description.toLowerCase()) || 
+                         args.description.toLowerCase().includes(obs.description.toLowerCase()))
+                      );
+
+                      if (isDuplicate) return prev;
+
+                      return [{
+                        id: crypto.randomUUID(),
+                        type: args.type || 'asset',
+                        description: args.description || 'Unknown observation',
+                        condition: args.condition || 'N/A',
+                        riskRating: args.riskRating || 'Low',
+                        time: new Date()
+                      }, ...prev].slice(0, 10); // Keep more history for active sessions
+                    });
+
+                    // Acknowledge the function call to the model
+                    sessionPromise.then(session => {
+                      (session as any).send({
+                         clientContent: {
+                           turns: [{
+                             role: "user",
+                             parts: [{
+                               functionResponse: {
+                                 name: "log_observation",
+                                 response: { result: "logged successfully" }
+                               }
+                             }]
+                           }],
+                           turnComplete: true
+                         }
+                      });
+                    });
+                 }
+              });
+            }
+
             if (message.serverContent?.outputTranscription) {
               setLiveTranscription(prev => (prev.length > 80 ? "" : prev) + message.serverContent!.outputTranscription!.text);
             }
@@ -257,6 +314,24 @@ export const ChatBot: React.FC<ChatBotProps> = ({ contextData, privacyMode, mode
           },
           systemInstruction,
           outputAudioTranscription: {},
+          tools: [{
+            functionDeclarations: [
+              {
+                name: "log_observation",
+                description: "Logs an observed hazard or asset directly to the inspector's dashboard screen in real-time.",
+                parameters: {
+                  type: 'OBJECT' as any,
+                  properties: {
+                    type: { type: 'STRING' as any, description: "Enum: 'hazard' or 'asset'" },
+                    description: { type: 'STRING' as any, description: "Detailed description of the observation" },
+                    condition: { type: 'STRING' as any, description: "Condition of the asset (e.g., 'Good', 'Poor'), or N/A for hazards" },
+                    riskRating: { type: 'STRING' as any, description: "Risk rating (e.g., 'Low', 'Medium', 'High', 'Extreme')" }
+                  },
+                  required: ["type", "description", "riskRating"]
+                }
+              }
+            ]
+          }]
         },
       });
 
@@ -330,7 +405,27 @@ export const ChatBot: React.FC<ChatBotProps> = ({ contextData, privacyMode, mode
                        "{liveTranscription}"
                     </div>
                  )}
+                 {liveObservations.length > 0 && (
+                     <div className="w-full space-y-2 mt-2">
+                         <h4 className="text-[10px] uppercase font-bold text-gray-500">Live AI Analytics</h4>
+                         {liveObservations.map(obs => (
+                             <div key={obs.id} className={`p-2 rounded-lg border text-xs flex gap-2 items-start ${obs.type === 'hazard' ? 'bg-orange-50 border-orange-200' : 'bg-blue-50 border-blue-200'} animate-fade-in-up`}>
+                                 <span className={`material-icons text-sm ${obs.type === 'hazard' ? 'text-orange-500' : 'text-blue-500'}`}>
+                                     {obs.type === 'hazard' ? 'warning' : 'category'}
+                                 </span>
+                                 <div>
+                                    <div className="font-semibold text-gray-800">{obs.description}</div>
+                                    <div className="text-[10px] text-gray-500 flex gap-2 mt-0.5">
+                                      <span>Risk: <b className={`${obs.riskRating === 'High' || obs.riskRating === 'Extreme' ? 'text-red-500' : ''}`}>{obs.riskRating}</b></span>
+                                      {obs.type === 'asset' && <span>Cond: <b>{obs.condition}</b></span>}
+                                    </div>
+                                 </div>
+                             </div>
+                         ))}
+                     </div>
+                 )}
                  <p className="text-[10px] text-gray-400 text-center">Gemini is seeing your camera and hearing your voice to analyze assets in real-time.</p>
+
               </div>
             )}
             {!isLiveActive && messages.map((msg) => (

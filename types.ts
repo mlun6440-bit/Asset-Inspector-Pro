@@ -71,6 +71,8 @@ export interface SiteInfo {
   numRooms: number;
   notes?: string;
   documents?: DocumentInsight[];
+  latitude?: number;
+  longitude?: number;
 }
 
 export interface AppState {

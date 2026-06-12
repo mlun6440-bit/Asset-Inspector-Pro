@@ -3,8 +3,15 @@ import { GoogleGenAI, Type, Schema } from "@google/genai";
 import { Asset, Room, SiteInfo, ChatMessage } from '../types';
 
 // process.env.API_KEY is injected by the environment.
-const apiKey = process.env.API_KEY || '';
-const ai = new GoogleGenAI({ apiKey });
+const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY || '';
+const ai = new GoogleGenAI({ 
+  apiKey,
+  httpOptions: {
+    headers: {
+      'User-Agent': 'aistudio-build',
+    }
+  }
+});
 
 export const cropImage = async (base64Image: string, bbox: { x: number, y: number, width: number, height: number }): Promise<string> => {
   return new Promise((resolve) => {
@@ -202,7 +209,7 @@ export const detectAssetsWithBoundingBoxes = async (images: { dataUrl: string }[
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
+      model: 'gemini-3.5-flash',
       contents: { parts },
       config: {
         responseMimeType: "application/json",
@@ -331,7 +338,7 @@ export const createChatStream = async (
   }
 
   const chat = ai.chats.create({
-    model: 'gemini-3-pro-preview',
+    model: 'gemini-3.5-flash',
     config: {
       systemInstruction: systemPrompt,
     },
@@ -359,7 +366,7 @@ export const analyzeDocument = async (base64Data: string, mimeType: string, file
     `;
 
     const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
+        model: 'gemini-3.5-flash',
         contents: [
             { role: 'user', parts: [
                 { inlineData: { data: base64Data.split(',')[1], mimeType } }, 
@@ -394,7 +401,7 @@ export const extractAssetsFromVendorRegister = async (base64Data: string, mimeTy
     `;
 
     const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
+        model: 'gemini-3.5-flash',
         contents: [
             { role: 'user', parts: [
                 { inlineData: { data: base64Data.split(',')[1], mimeType } }, 
@@ -462,7 +469,7 @@ export const summarizeConversation = async (messages: ChatMessage[]): Promise<st
     try {
         // Use gemini-3-flash-preview for basic text tasks like summarization
         const response = await ai.models.generateContent({
-            model: 'gemini-3-flash-preview',
+            model: 'gemini-3.5-flash',
             contents: prompt
         });
         return response.text || "";
