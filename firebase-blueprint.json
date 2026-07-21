@@ -1,0 +1,80 @@
+{
+  "entities": {
+    "Inspection": {
+      "title": "Inspection",
+      "description": "A single facility assessment inspection record containing rooms, metadata, and site information.",
+      "type": "object",
+      "properties": {
+        "siteInfo": {
+          "type": "object",
+          "description": "Detailed site metadata."
+        },
+        "rooms": {
+          "type": "array",
+          "description": "Rooms listed in the inspection."
+        },
+        "lastUpdated": {
+          "type": "string",
+          "description": "ISO timestamp of last update."
+        },
+        "device": {
+          "type": "string",
+          "description": "Browser user agent."
+        }
+      },
+      "required": ["siteInfo", "rooms", "lastUpdated"]
+    },
+    "Asset": {
+      "title": "Asset",
+      "description": "A single physical building fabric or services asset audited during an inspection.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "category": { "type": "string" },
+        "description": { "type": "string" },
+        "condition": { "type": "string" },
+        "riskRating": { "type": "string" },
+        "justification": { "type": "string" },
+        "quantity": { "type": "number" },
+        "cost": { "type": "string" },
+        "rul": { "type": "string" },
+        "verified": { "type": "boolean" },
+        "aiDetected": { "type": "boolean" },
+        "auditTrail": { "type": "array" },
+        "roomName": { "type": "string" },
+        "buildingName": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "ai_search_text": { "type": "string" }
+      },
+      "required": ["id", "name", "category", "condition", "cost"]
+    },
+    "Presence": {
+      "title": "Presence",
+      "description": "Inspector presence representation for real-time collaboration.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "email": { "type": "string" },
+        "lastActive": { "type": "string" },
+        "isEditing": { "type": "boolean" },
+        "device": { "type": "string" }
+      },
+      "required": ["userId", "email", "lastActive", "isEditing"]
+    }
+  },
+  "firestore": {
+    "inspections/{inspectionId}": {
+      "schema": "Inspection",
+      "description": "Main inspection entity storing overall site data and nested room structures."
+    },
+    "inspections/{inspectionId}/assets/{assetId}": {
+      "schema": "Asset",
+      "description": "Flattened searchable registry of audited assets under a specific inspection."
+    },
+    "inspections/{inspectionId}/presence/{userId}": {
+      "schema": "Presence",
+      "description": "Real-time presence indicator for an inspector actively viewing or editing the site."
+    }
+  }
+}

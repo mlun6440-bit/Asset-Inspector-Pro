@@ -3,6 +3,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
 import { createChatStream } from '../services/geminiService';
 import { ChatMessage } from '../types';
+import { StandardsNotebook } from './StandardsNotebook';
 
 // PCM Audio Utilities
 function encode(bytes: Uint8Array) {
@@ -58,6 +59,75 @@ export const ChatBot: React.FC<ChatBotProps> = ({ contextData, privacyMode, mode
   const [isLoading, setIsLoading] = useState(false);
   const [liveTranscription, setLiveTranscription] = useState('');
   const [liveObservations, setLiveObservations] = useState<Array<{id: string, type: string, description: string, condition: string, riskRating: string, time: Date}>>([]);
+  const [isNotebookOpen, setIsNotebookOpen] = useState(false);
+  const [activeClauseId, setActiveClauseId] = useState<string | null>(null);
+
+  const findMatchingClauseId = (content: string): string | null => {
+    const normalized = content.toLowerCase();
+    if (normalized.includes('55000') || normalized.includes('principles') || normalized.includes('2.4')) {
+      return 'iso-55000-principles';
+    }
+    if (normalized.includes('4.1')) return 'iso-55001-4.1';
+    if (normalized.includes('4.2')) return 'iso-55001-4.2';
+    if (normalized.includes('5.1')) return 'iso-55001-5.1';
+    if (normalized.includes('6.1')) return 'iso-55001-6.1';
+    if (normalized.includes('6.2')) return 'iso-55001-6.2';
+    if (normalized.includes('7.5')) return 'iso-55001-7.5';
+    if (normalized.includes('8.1')) return 'iso-55001-8.1';
+    if (normalized.includes('8.2')) return 'iso-55001-8.2';
+    if (normalized.includes('9.1')) return 'iso-55001-9.1';
+    if (normalized.includes('10.1')) return 'iso-55001-10.1';
+    if (normalized.includes('55002') || normalized.includes('annex a')) return 'iso-55002-guidance';
+    return null;
+  };
+
+  const renderMessageTextWithLinks = (text: string) => {
+    // Matches square brackets containing Clause, ISO, Section, or Annex
+    const generalRegex = /\[([^\]]*(?:Clause|ISO\s+\d+|Section|Annex)[^\]]*)\]/gi;
+    
+    const parts: React.ReactNode[] = [];
+    let lastIndex = 0;
+    let match;
+    
+    while ((match = generalRegex.exec(text)) !== null) {
+      const matchIndex = match.index;
+      const fullMatch = match[0];
+      const content = match[1];
+      
+      if (matchIndex > lastIndex) {
+        parts.push(<span key={lastIndex}>{text.substring(lastIndex, matchIndex)}</span>);
+      }
+      
+      const matchedId = findMatchingClauseId(content);
+      
+      if (matchedId) {
+        parts.push(
+          <button
+            key={matchIndex}
+            onClick={() => {
+              setActiveClauseId(matchedId);
+              setIsNotebookOpen(true);
+            }}
+            className="inline-flex items-center gap-1 px-2 py-0.5 mx-1 rounded bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 font-mono text-[11px] font-bold transition-colors shadow-sm align-baseline cursor-pointer"
+            title="Click to view standard details in the Standards Notebook"
+          >
+            <span className="material-icons text-[11px]">menu_book</span>
+            {content}
+          </button>
+        );
+      } else {
+        parts.push(<span key={matchIndex} className="text-amber-700 font-semibold">{fullMatch}</span>);
+      }
+      
+      lastIndex = generalRegex.lastIndex;
+    }
+    
+    if (lastIndex < text.length) {
+      parts.push(<span key={lastIndex}>{text.substring(lastIndex)}</span>);
+    }
+    
+    return parts.length > 0 ? parts : text;
+  };
 
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -371,87 +441,116 @@ export const ChatBot: React.FC<ChatBotProps> = ({ contextData, privacyMode, mode
       </button>
 
       {isOpen && (
-        <div className="fixed bottom-24 right-6 w-[90vw] max-w-md h-[550px] max-h-[80vh] bg-white rounded-2xl shadow-2xl flex flex-col z-50 overflow-hidden border border-gray-200 animate-fade-in-up">
-          <div className={`p-4 text-white flex justify-between items-center transition-colors bg-gradient-to-r ${
-              isLiveActive ? 'from-red-600 to-orange-500' :
-              mode === 'portfolio' ? 'from-purple-700 to-pink-600' :
-              privacyMode ? 'from-teal-700 to-green-600' : 'from-indigo-700 to-purple-700'
-          }`}>
-            <div className="flex items-center gap-2">
-              <span className="material-icons text-xl">{isLiveActive ? 'videocam' : 'psychology'}</span>
-              <div>
-                <h3 className="font-bold text-sm">{isLiveActive ? 'Multimodal Live Audit' : 'Engineering Manager'}</h3>
-                <span className="text-[10px] opacity-80 block">{isLiveActive ? 'Camera + Audio Streaming' : 'ISO 55001:2024 Context'}</span>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              {!isLiveActive && <button onClick={startLiveMode} className="bg-white/20 hover:bg-white/30 p-2 rounded-full"><span className="material-icons text-sm">videocam</span></button>}
-              {isLiveActive && <button onClick={stopLiveMode} className="bg-red-700 p-2 rounded-full"><span className="material-icons text-sm">call_end</span></button>}
-            </div>
-          </div>
-
-          <div className="flex-1 overflow-y-auto p-4 bg-gray-50 space-y-4">
-            {isLiveActive && (
-              <div className="flex flex-col items-center h-full space-y-4">
-                 <div className="relative w-full aspect-video bg-black rounded-xl overflow-hidden shadow-lg border-2 border-red-200">
-                    <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
-                    <canvas ref={canvasRef} className="hidden" />
-                    <div className="absolute top-2 left-2 bg-red-600 text-white text-[10px] px-2 py-0.5 rounded-full flex items-center gap-1">
-                       <span className="w-2 h-2 bg-white rounded-full animate-pulse"></span> LIVE FEED
-                    </div>
-                 </div>
-                 {liveTranscription && (
-                    <div className="bg-white p-3 rounded-xl border border-red-100 shadow-inner w-full text-xs text-gray-700 italic min-h-[60px]">
-                       "{liveTranscription}"
-                    </div>
-                 )}
-                 {liveObservations.length > 0 && (
-                     <div className="w-full space-y-2 mt-2">
-                         <h4 className="text-[10px] uppercase font-bold text-gray-500">Live AI Analytics</h4>
-                         {liveObservations.map(obs => (
-                             <div key={obs.id} className={`p-2 rounded-lg border text-xs flex gap-2 items-start ${obs.type === 'hazard' ? 'bg-orange-50 border-orange-200' : 'bg-blue-50 border-blue-200'} animate-fade-in-up`}>
-                                 <span className={`material-icons text-sm ${obs.type === 'hazard' ? 'text-orange-500' : 'text-blue-500'}`}>
-                                     {obs.type === 'hazard' ? 'warning' : 'category'}
-                                 </span>
-                                 <div>
-                                    <div className="font-semibold text-gray-800">{obs.description}</div>
-                                    <div className="text-[10px] text-gray-500 flex gap-2 mt-0.5">
-                                      <span>Risk: <b className={`${obs.riskRating === 'High' || obs.riskRating === 'Extreme' ? 'text-red-500' : ''}`}>{obs.riskRating}</b></span>
-                                      {obs.type === 'asset' && <span>Cond: <b>{obs.condition}</b></span>}
-                                    </div>
-                                 </div>
-                             </div>
-                         ))}
-                     </div>
-                 )}
-                 <p className="text-[10px] text-gray-400 text-center">Gemini is seeing your camera and hearing your voice to analyze assets in real-time.</p>
-
-              </div>
-            )}
-            {!isLiveActive && messages.map((msg) => (
-              <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                <div className={`max-w-[85%] rounded-2xl px-4 py-2 shadow-sm ${msg.role === 'user' ? 'bg-indigo-600 text-white rounded-br-none' : 'bg-white text-gray-800 border rounded-bl-none'}`}>
-                  <p className="text-sm whitespace-pre-wrap">{msg.text}</p>
+        <div className={`fixed bottom-24 right-6 h-[600px] max-h-[85vh] bg-white rounded-2xl shadow-2xl flex flex-col md:flex-row z-50 overflow-hidden border border-gray-200 transition-all duration-300 ease-in-out animate-fade-in-up ${
+          isNotebookOpen ? 'w-[95vw] max-w-4xl' : 'w-[90vw] max-w-md'
+        }`}>
+          {/* Main Chat Pane */}
+          <div className="flex-1 flex flex-col h-full min-w-0">
+            <div className={`p-4 text-white flex justify-between items-center transition-colors bg-gradient-to-r shrink-0 ${
+                isLiveActive ? 'from-red-600 to-orange-500' :
+                mode === 'portfolio' ? 'from-purple-700 to-pink-600' :
+                privacyMode ? 'from-teal-700 to-green-600' : 'from-indigo-700 to-purple-700'
+            }`}>
+              <div className="flex items-center gap-2">
+                <span className="material-icons text-xl">{isLiveActive ? 'videocam' : 'psychology'}</span>
+                <div>
+                  <h3 className="font-bold text-sm">{isLiveActive ? 'Multimodal Live Audit' : 'Engineering Manager'}</h3>
+                  <span className="text-[10px] opacity-80 block">{isLiveActive ? 'Camera + Audio Streaming' : 'ISO 55001:2024 Context'}</span>
                 </div>
               </div>
-            ))}
-            {isLoading && <div className="flex justify-start"><div className="bg-white px-4 py-3 rounded-2xl rounded-bl-none shadow-sm border animate-pulse">...</div></div>}
-            <div ref={messagesEndRef} />
+              <div className="flex items-center gap-2">
+                {!isLiveActive && (
+                  <button 
+                    onClick={() => setIsNotebookOpen(!isNotebookOpen)} 
+                    className={`p-1.5 rounded-full transition-all flex items-center justify-center ${
+                      isNotebookOpen ? 'bg-amber-500 text-slate-900 font-bold scale-110 shadow-md' : 'bg-white/20 hover:bg-white/30 text-white'
+                    }`}
+                    title="Toggle ISO Standards Reference Notebook"
+                  >
+                    <span className="material-icons text-sm">menu_book</span>
+                  </button>
+                )}
+                {!isLiveActive && <button onClick={startLiveMode} className="bg-white/20 hover:bg-white/30 p-1.5 rounded-full"><span className="material-icons text-sm">videocam</span></button>}
+                {isLiveActive && <button onClick={stopLiveMode} className="bg-red-700 p-1.5 rounded-full"><span className="material-icons text-sm">call_end</span></button>}
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 bg-gray-50 space-y-4">
+              {isLiveActive && (
+                <div className="flex flex-col items-center h-full space-y-4">
+                   <div className="relative w-full aspect-video bg-black rounded-xl overflow-hidden shadow-lg border-2 border-red-200">
+                      <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
+                      <canvas ref={canvasRef} className="hidden" />
+                      <div className="absolute top-2 left-2 bg-red-600 text-white text-[10px] px-2 py-0.5 rounded-full flex items-center gap-1">
+                         <span className="w-2 h-2 bg-white rounded-full animate-pulse"></span> LIVE FEED
+                      </div>
+                   </div>
+                   {liveTranscription && (
+                      <div className="bg-white p-3 rounded-xl border border-red-100 shadow-inner w-full text-xs text-gray-700 italic min-h-[60px]">
+                         "{liveTranscription}"
+                      </div>
+                   )}
+                   {liveObservations.length > 0 && (
+                       <div className="w-full space-y-2 mt-2">
+                           <h4 className="text-[10px] uppercase font-bold text-gray-500">Live AI Analytics</h4>
+                           {liveObservations.map(obs => (
+                               <div key={obs.id} className={`p-2 rounded-lg border text-xs flex gap-2 items-start ${obs.type === 'hazard' ? 'bg-orange-50 border-orange-200' : 'bg-blue-50 border-blue-200'} animate-fade-in-up`}>
+                                   <span className={`material-icons text-sm ${obs.type === 'hazard' ? 'text-orange-500' : 'text-blue-500'}`}>
+                                       {obs.type === 'hazard' ? 'warning' : 'category'}
+                                   </span>
+                                   <div>
+                                      <div className="font-semibold text-gray-800">{obs.description}</div>
+                                      <div className="text-[10px] text-gray-500 flex gap-2 mt-0.5">
+                                        <span>Risk: <b className={`${obs.riskRating === 'High' || obs.riskRating === 'Extreme' ? 'text-red-500' : ''}`}>{obs.riskRating}</b></span>
+                                        {obs.type === 'asset' && <span>Cond: <b>{obs.condition}</b></span>}
+                                      </div>
+                                   </div>
+                               </div>
+                           ))}
+                       </div>
+                   )}
+                   <p className="text-[10px] text-gray-400 text-center">Gemini is seeing your camera and hearing your voice to analyze assets in real-time.</p>
+
+                </div>
+              )}
+              {!isLiveActive && messages.map((msg) => (
+                <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[85%] rounded-2xl px-4 py-2 shadow-sm ${msg.role === 'user' ? 'bg-indigo-600 text-white rounded-br-none' : 'bg-white text-gray-800 border rounded-bl-none'}`}>
+                    <p className="text-sm whitespace-pre-wrap">
+                      {msg.role === 'model' ? renderMessageTextWithLinks(msg.text) : msg.text}
+                    </p>
+                  </div>
+                </div>
+              ))}
+              {isLoading && <div className="flex justify-start"><div className="bg-white px-4 py-3 rounded-2xl rounded-bl-none shadow-sm border animate-pulse">...</div></div>}
+              <div ref={messagesEndRef} />
+            </div>
+
+            {!isLiveActive && (
+              <div className="p-4 bg-white border-t shrink-0">
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+                    placeholder="Ask about remedial works..."
+                    className="flex-1 px-4 py-2 border rounded-full text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                  />
+                  <button onClick={handleSend} disabled={isLoading || !input.trim()} className="w-10 h-10 bg-indigo-600 text-white rounded-full flex items-center justify-center cursor-pointer"><span className="material-icons text-sm">send</span></button>
+                </div>
+              </div>
+            )}
           </div>
 
-          {!isLiveActive && (
-            <div className="p-4 bg-white border-t">
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-                  placeholder="Ask about remedial works..."
-                  className="flex-1 px-4 py-2 border rounded-full text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
-                />
-                <button onClick={handleSend} disabled={isLoading || !input.trim()} className="w-10 h-10 bg-indigo-600 text-white rounded-full flex items-center justify-center"><span className="material-icons text-sm">send</span></button>
-              </div>
+          {/* Standards Notebook Side-Pane */}
+          {isNotebookOpen && (
+            <div className="w-full md:w-[45%] border-t md:border-t-0 md:border-l border-slate-700 h-1/2 md:h-full shrink-0 flex">
+              <StandardsNotebook
+                activeClauseId={activeClauseId}
+                onSelectClause={(id) => setActiveClauseId(id)}
+                onClose={() => setIsNotebookOpen(false)}
+              />
             </div>
           )}
         </div>

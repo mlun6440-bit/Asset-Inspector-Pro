@@ -1,126 +1,21 @@
 
+// Updated Live Sync Configuration
 import React, { useState, useEffect, useMemo } from 'react';
 import { SiteInfo, Room, AppState, Asset, ChatMessage, AuditEntry } from './types';
 import { firebaseService } from './services/firebaseService';
 import { detectAssetsWithBoundingBoxes, cropImage, summarizeConversation, analyzeDocument, extractAssetsFromVendorRegister } from './services/geminiService';
 import { ChatBot } from './components/ChatBot';
+import { ArchitecturalReconstruction } from './components/ArchitecturalReconstruction';
+import { WelcomeView } from './components/WelcomeView';
+import { PortfolioView } from './components/PortfolioView';
+import { RoomAssessmentView } from './components/RoomAssessmentView';
+import { AssessmentSummaryView } from './components/AssessmentSummaryView';
+import { AIAgentOS } from './components/AIAgentOS';
+import { EditAssetModal } from './components/EditAssetModal';
 import { format, subMonths, startOfMonth, eachMonthOfInterval, isSameMonth, parseISO } from 'date-fns';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer, AreaChart, Area, PieChart, Pie, Cell } from 'recharts';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer, AreaChart, Area } from 'recharts';
 
-// ============================================================================
-// STRICT BUILDING FABRIC & SERVICES LIST (No Furniture/Appliances)
-// ============================================================================
-const ASSET_CATEGORIES = [
-    // --- BUILDING FABRIC ---
-    "Building Structural & Fabric,Walls",
-    "Building Structural & Fabric,Paintwork",
-    "Building Structural & Fabric,Roofing",
-    "Building Structural & Fabric,Guttering",
-    "Building Structural & Fabric,Flooring",
-    "Building Structural & Fabric,Facade",
-    "Building Structural & Fabric,Ceiling",
-    "Building Structural & Fabric,Windows",
-    "Building Structural & Fabric,Window Shades & Furnishings", // Blinds (Fixed)
-    "Building Structural & Fabric,Stairs & Ramps",
-    "Building Structural & Fabric,Security Barriers & Structures",
-    "Building Structural & Fabric,Roller Doors",
-    "Building Structural & Fabric,Height Safety",
-    "Building Structural & Fabric,Fire/Smoke/Exit Door",
-    "Building Structural & Fabric,Doors & Door Hardware",
-    "Building Structural & Fabric,Disabled Access",
-    "Building Structural & Fabric,Automatic Doors",
-    "Building Structural & Fabric,Signage & Livery (Non-Powered)",
-    "Building Structural & Fabric,Signage & Livery (Powered)",
-
-    // --- ELECTRICAL SERVICES ---
-    "Electrical Systems,Switchgear",
-    "Electrical Systems,Main Switchboard",
-    "Electrical Systems,Distribution Board",
-    "Electrical Systems,Lighting",
-    "Electrical Systems,Emergency & Exit Lighting",
-    "Electrical Systems,Electrical Switches & Outlets",
-    "Electrical Systems,Electrical Distribution",
-    "Electrical Systems,Solar Power",
-    "Electrical Systems,UPS",
-    "Electrical Systems,Power Factor Correction",
-    "Electrical Systems,Lightning Protection",
-    "Electrical Systems,Emergency Power Generation",
-    "Electrical Systems,Electricity Meter",
-    "Electrical Systems,Electrical Transformer",
-    
-    // --- HVAC & MECHANICAL ---
-    "HVAC & Refrigeration,Air Handling Units",
-    "HVAC & Refrigeration,Split AC",
-    "HVAC & Refrigeration,Ducted AC",
-    "HVAC & Refrigeration,VRV System",
-    "HVAC & Refrigeration,Chillers",
-    "HVAC & Refrigeration,Cooling Towers",
-    "HVAC & Refrigeration,Boilers",
-    "HVAC & Refrigeration,Fans",
-    "HVAC & Refrigeration,Ductwork",
-    "HVAC & Refrigeration,Diffusers & Grilles",
-    "HVAC & Refrigeration,HVAC Control / BMS",
-    "HVAC & Refrigeration,Heaters",
-    "HVAC & Refrigeration,Pumps",
-    "HVAC & Refrigeration,Fire Dampers",
-
-    // --- PLUMBING ---
-    "Plumbing Systems,Toilets & Urinals",
-    "Plumbing Systems,Sinks & Basins",
-    "Plumbing Systems,Taps & Mixers",
-    "Plumbing Systems,Showers",
-    "Plumbing Systems,Hot Water Service",
-    "Plumbing Systems,Water Tanks",
-    "Plumbing Systems,Pumps",
-    "Plumbing Systems,Valves & Backflow Prevention",
-    "Plumbing Systems,Stormwater Drains",
-    "Plumbing Systems,Floor Wastes",
-    "Plumbing Systems,Sewage System",
-    "Plumbing Systems,Water Meter",
-    "Plumbing Systems,Fire Hydrants & Hose Reels",
-    "Plumbing Systems,Sprinkler System",
-
-    // --- FIRE & SAFETY ---
-    "Fire Systems,Fire Detection (Smoke/Thermal)",
-    "Fire Systems,Fire Alarm Panel (FIP)",
-    "Fire Systems,EWIS (Warning System)",
-    "Fire Systems,Fire Extinguishers",
-    "Fire Systems,Fire Blankets",
-    "Fire Systems,Gas Suppression System",
-
-    // --- SECURITY & TRANSPORT ---
-    "Security Systems,CCTV Cameras",
-    "Security Systems,Access Control Readers",
-    "Security Systems,Security Alarm Sensors",
-    "Transportation Systems,Lifts / Elevators",
-    "Transportation Systems,Escalators",
-    
-    // --- GROUNDS (STRUCTURAL) ---
-    "Grounds & Gardens,Roads & Driveways",
-    "Grounds & Gardens,Pathways & Paving",
-    "Grounds & Gardens,Fences & Gates",
-    "Grounds & Gardens,Retaining Walls",
-    "Grounds & Gardens,Car Park Linemarking"
-];
-
-const CONDITION_OPTIONS = ['Excellent', 'Good', 'Average', 'Fair', 'Poor'];
-const RISK_OPTIONS = ['Low', 'Medium', 'High', 'Extreme'];
-const RISK_COLORS: Record<string, string> = {
-  Low: '#10B981',       // Green
-  Medium: '#EAB308',    // Yellow
-  High: '#F97316',      // Orange
-  Extreme: '#DC2626'    // Red
-};
-
-const INITIAL_ROOM_STATE: Room = {
-  id: '',
-  buildingName: '',
-  roomName: '',
-  images: [],
-  assets: [],
-  croppedImages: {},
-  comments: ''
-};
+import { ASSET_CATEGORIES, CONDITION_OPTIONS, RISK_OPTIONS, RISK_COLORS, INITIAL_ROOM_STATE } from './constants';
 
 function App() {
   const [loading, setLoading] = useState(true);
@@ -165,6 +60,119 @@ function App() {
 
   // NEW: Lifted Chat State
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+
+  // Real-time collaboration & presence states
+  const [inspectorProfile, setInspectorProfile] = useState<{ userId: string, name: string, email: string }>(() => {
+      const cached = localStorage.getItem('inspector_profile');
+      if (cached) {
+          try {
+              return JSON.parse(cached);
+          } catch (e) {}
+      }
+      const randomId = Math.random().toString(36).substring(2, 9);
+      const randNum = Math.floor(1000 + Math.random() * 9000);
+      const profile = {
+          userId: 'user_' + randomId,
+          name: 'Inspector ' + randNum,
+          email: `inspector.${randNum}@company.com`
+      };
+      localStorage.setItem('inspector_profile', JSON.stringify(profile));
+      return profile;
+  });
+
+  const [activePresences, setActivePresences] = useState<any[]>([]);
+  const [hasEditLock, setHasEditLock] = useState<boolean>(true);
+  const [showProfileModal, setShowProfileModal] = useState<boolean>(false);
+  const [isEditingPresence, setIsEditingPresence] = useState<boolean>(true); // user starts with edit intent
+
+  const currentInspectionId = useMemo(() => {
+      if (!appState.siteInfo.name) return '';
+      return appState.siteInfo.name.trim().replace(/\s+/g, '_').toLowerCase();
+  }, [appState.siteInfo.name]);
+
+  const getAvatarColor = (str: string) => {
+      let hash = 0;
+      for (let i = 0; i < str.length; i++) {
+          hash = str.charCodeAt(i) + ((hash << 5) - hash);
+      }
+      const colors = [
+          'bg-pink-500 text-white',
+          'bg-purple-500 text-white',
+          'bg-blue-500 text-white',
+          'bg-indigo-500 text-white',
+          'bg-teal-500 text-white',
+          'bg-emerald-500 text-white',
+          'bg-amber-500 text-white',
+          'bg-rose-500 text-white'
+      ];
+      const index = Math.abs(hash) % colors.length;
+      return colors[index];
+  };
+
+  const getInitials = (name: string, email: string) => {
+      const text = name || email || 'Inspector';
+      if (text.includes('@')) {
+          return text.substring(0, 2).toUpperCase();
+      }
+      const parts = text.split(' ');
+      if (parts.length >= 2) {
+          return (parts[0][0] + parts[1][0]).toUpperCase();
+      }
+      return text.substring(0, 2).toUpperCase();
+  };
+
+  useEffect(() => {
+      if (!effectiveIsOnline || !currentInspectionId || viewMode !== 'single' || appState.view === 'welcome') {
+          setActivePresences([]);
+          setHasEditLock(true);
+          return;
+      }
+
+      // 1. Immediately publish initial presence
+      firebaseService.updatePresence(currentInspectionId, inspectorProfile.userId, inspectorProfile.email, isEditingPresence);
+
+      // 2. Set up heartbeat timer (every 5 seconds)
+      const heartbeat = setInterval(() => {
+          firebaseService.updatePresence(currentInspectionId, inspectorProfile.userId, inspectorProfile.email, isEditingPresence);
+      }, 5000);
+
+      // 3. Listen to all presences on this site
+      const unsubscribe = firebaseService.listenToPresence(currentInspectionId, (presences) => {
+          const now = Date.now();
+          // Filter out stale presences (> 15 seconds) and our own presence
+          const activeOthers = presences.filter(p => {
+              if (p.userId === inspectorProfile.userId) return false;
+              const lastActiveTime = p.lastActive ? new Date(p.lastActive).getTime() : 0;
+              return (now - lastActiveTime) < 15000;
+          });
+          setActivePresences(activeOthers);
+
+          // 4. Resolve edit lock conflicts
+          const otherEditors = activeOthers.filter(p => p.isEditing);
+          if (otherEditors.length > 0) {
+              if (isEditingPresence) {
+                  // We see someone else editing, and we are also marked as editing.
+                  // By default, let's gracefully downgrade our active state to viewing (isEditingPresence = false)
+                  // and alert the user that they have been placed in read-only mode because someone else is editing!
+                  setIsEditingPresence(false);
+                  setHasEditLock(false);
+              } else {
+                  // If we are already in viewing mode, we do not have the edit lock.
+                  setHasEditLock(false);
+              }
+          } else {
+              // No other active editors! We can safely have/keep the edit lock.
+              setHasEditLock(true);
+          }
+      });
+
+      // Cleanup on unmount or site change
+      return () => {
+          clearInterval(heartbeat);
+          unsubscribe();
+          firebaseService.removePresence(currentInspectionId, inspectorProfile.userId);
+      };
+  }, [effectiveIsOnline, currentInspectionId, viewMode, appState.view, inspectorProfile, isEditingPresence]);
 
   useEffect(() => {
     const handleOnline = () => setIsOnline(true);
@@ -315,6 +323,7 @@ function App() {
   // --- State Updates & Helpers ---
 
   const handleSiteInfoChange = (field: keyof SiteInfo, value: any) => {
+    if (!hasEditLock) return;
     setAppState(prev => ({
       ...prev,
       siteInfo: { ...prev.siteInfo, [field]: value }
@@ -387,10 +396,12 @@ function App() {
   };
 
   const saveGlobalState = () => {
+    if (!hasEditLock) return;
     firebaseService.saveState(appState.siteInfo, appState.rooms);
   };
 
   const handleDocumentUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+      if (!hasEditLock) return;
       const file = e.target.files?.[0];
       if (!file) return;
 
@@ -410,7 +421,9 @@ function App() {
                       id: crypto.randomUUID(),
                       name: file.name,
                       summary,
-                      dateAdded: Date.now()
+                      dateAdded: Date.now(),
+                      dataUrl,
+                      mimeType: file.type
                   };
                   
                   setAppState(prev => ({
@@ -447,18 +460,19 @@ function App() {
               const groupedAssets = await extractAssetsFromVendorRegister(dataUrl, file.type, file.name);
               
               if (groupedAssets.length > 0) {
-                  let newRooms = [...appState.rooms];
+                  let newRooms = appState.rooms.map(r => ({...r, assets: [...r.assets]}));
                   
                   groupedAssets.forEach(group => {
-                      let room = newRooms.find(r => r.roomName.toLowerCase() === group.roomName.toLowerCase());
-                      if (!room) {
-                          room = {
+                      let roomIndex = newRooms.findIndex(r => r.roomName.toLowerCase() === group.roomName.toLowerCase());
+                      if (roomIndex === -1) {
+                          newRooms.push({
                               ...INITIAL_ROOM_STATE,
                               id: crypto.randomUUID(),
                               roomName: group.roomName,
-                              buildingName: appState.siteInfo.name || 'Building'
-                          };
-                          newRooms.push(room);
+                              buildingName: appState.siteInfo.name || 'Building',
+                              assets: []
+                          });
+                          roomIndex = newRooms.length - 1;
                       }
                       
                       const mappedAssets: Asset[] = group.assets.map(a => ({
@@ -478,7 +492,7 @@ function App() {
                           aiDetected: true
                       }));
                       
-                      room.assets = [...room.assets, ...mappedAssets];
+                      newRooms[roomIndex].assets.push(...mappedAssets);
                   });
                   
                   setAppState(prev => ({
@@ -536,13 +550,33 @@ function App() {
     };
 
     if (appState.rooms && appState.rooms.length > 0) {
+        let updatedRooms = [...appState.rooms];
+        if (appState.siteInfo.numRooms !== updatedRooms.length) {
+            if (appState.siteInfo.numRooms > updatedRooms.length) {
+                // Append rooms
+                const extraRooms = Array.from({ length: appState.siteInfo.numRooms - updatedRooms.length }).map((_, i) => {
+                    const idx = updatedRooms.length + i;
+                    return {
+                        ...INITIAL_ROOM_STATE,
+                        id: crypto.randomUUID(),
+                        roomName: idx === 0 ? 'Building Exterior' : `Room ${idx}`,
+                        buildingName: appState.siteInfo.name || updatedSiteInfo.name
+                    };
+                });
+                updatedRooms = [...updatedRooms, ...extraRooms];
+            } else {
+                // Shrink rooms
+                updatedRooms = updatedRooms.slice(0, appState.siteInfo.numRooms);
+            }
+        }
         setAppState(prev => ({
             ...prev,
             siteInfo: updatedSiteInfo,
+            rooms: updatedRooms,
             view: 'assessment',
-            currentRoomIndex: 0
+            currentRoomIndex: Math.min(prev.currentRoomIndex, updatedRooms.length - 1)
         }));
-        firebaseService.saveState(updatedSiteInfo, appState.rooms);
+        firebaseService.saveState(updatedSiteInfo, updatedRooms);
         return;
     }
 
@@ -564,6 +598,7 @@ function App() {
   };
 
   const updateCurrentRoom = (updates: Partial<Room>) => {
+    if (!hasEditLock) return;
     setAppState(prev => {
       const newRooms = [...prev.rooms];
       newRooms[prev.currentRoomIndex] = { ...newRooms[prev.currentRoomIndex], ...updates };
@@ -724,6 +759,7 @@ function App() {
   };
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!hasEditLock) return;
     if (!e.target.files) return;
     const files: File[] = Array.from(e.target.files);
     
@@ -752,6 +788,7 @@ function App() {
   };
 
   const generateAssetsWithAI = async () => {
+    if (!hasEditLock) return;
     const currentRoom = appState.rooms[appState.currentRoomIndex];
     if (currentRoom.images.length === 0) return;
 
@@ -770,7 +807,7 @@ function App() {
         if (newA.boundingBox && newA.sourceImageIndex !== undefined) {
            if (newA.sourceImageIndex >= 0 && newA.sourceImageIndex < currentRoom.images.length) {
                const sourceImg = currentRoom.images[newA.sourceImageIndex];
-               if (sourceImg && sourceImg.dataUrl.startsWith('data:image')) {
+               if (sourceImg && sourceImg.dataUrl) {
                    const croppedDataUrl = await cropImage(sourceImg.dataUrl, newA.boundingBox);
                    newCroppedImages[newA.id] = croppedDataUrl;
                }
@@ -1037,11 +1074,11 @@ function App() {
                   appState.siteInfo.name,
                   room.roomName,
                   a.category,
-                  a.description.replace(/,/g, ';'),
+                  (a.description || '').replace(/,/g, ';'),
                   a.condition,
                   a.riskRating || 'Low',
                   a.age || '',
-                  a.justification.replace(/,/g, ';'),
+                  (a.justification || '').replace(/,/g, ';'),
                   (a.notes || '').replace(/,/g, ';'),
                   qtyVal,
                   a.cost,
@@ -1290,6 +1327,67 @@ function App() {
           </div>
       )}
 
+      {showProfileModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+              <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden">
+                  <div className="p-4 border-b flex justify-between items-center bg-indigo-50">
+                      <h3 className="text-lg font-bold text-indigo-800 flex items-center gap-2">
+                          <span className="material-icons">account_circle</span> Customize Inspector Profile
+                      </h3>
+                      <button onClick={() => setShowProfileModal(false)} className="text-gray-500 hover:text-gray-700">
+                          <span className="material-icons">close</span>
+                      </button>
+                  </div>
+                  <div className="p-6 space-y-4">
+                      <p className="text-xs text-gray-500">
+                          Change your name and email to simulate real-time multi-inspector collaboration across different browser tabs.
+                      </p>
+                      <div>
+                          <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Inspector Name</label>
+                          <input 
+                              type="text"
+                              value={inspectorProfile.name}
+                              onChange={(e) => {
+                                  const updated = { ...inspectorProfile, name: e.target.value };
+                                  setInspectorProfile(updated);
+                                  localStorage.setItem('inspector_profile', JSON.stringify(updated));
+                              }}
+                              className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm text-black"
+                              placeholder="e.g. Inspector John"
+                          />
+                      </div>
+                      <div>
+                          <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Inspector Email</label>
+                          <input 
+                              type="email"
+                              value={inspectorProfile.email}
+                              onChange={(e) => {
+                                  const updated = { ...inspectorProfile, email: e.target.value };
+                                  setInspectorProfile(updated);
+                                  localStorage.setItem('inspector_profile', JSON.stringify(updated));
+                              }}
+                              className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm text-black"
+                              placeholder="e.g. john@company.com"
+                          />
+                      </div>
+                  </div>
+                  <div className="p-4 border-t bg-gray-50 flex justify-end">
+                      <button 
+                          onClick={() => {
+                              setShowProfileModal(false);
+                              if (currentInspectionId && effectiveIsOnline) {
+                                  firebaseService.updatePresence(currentInspectionId, inspectorProfile.userId, inspectorProfile.email, isEditingPresence);
+                              }
+                          }}
+                          className="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg shadow text-xs"
+                      >
+                          Done
+                      </button>
+                  </div>
+              </div>
+          </div>
+      )}
+
       {editingAsset && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
               <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
@@ -1395,14 +1493,12 @@ function App() {
                                   <option value="">Select Category...</option>
                                   {ASSET_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
                               </select>
-                          </div>
-
-                          <div>
+                          </div>                           <div>
                               <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Description</label>
                               <textarea 
                                   value={editingAsset.description}
                                   onChange={(e) => setEditingAsset({...editingAsset, description: e.target.value})}
-                                  className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm h-20"
+                                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm h-20 text-slate-800 bg-white"
                                   placeholder="Detailed description..."
                               />
                           </div>
@@ -1413,7 +1509,7 @@ function App() {
                                   <select 
                                       value={editingAsset.condition}
                                       onChange={(e) => setEditingAsset({...editingAsset, condition: e.target.value})}
-                                      className="w-full px-2 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white text-xs"
+                                      className="w-full px-2 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white text-xs text-slate-800"
                                   >
                                       {CONDITION_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
                                   </select>
@@ -1423,7 +1519,7 @@ function App() {
                                   <select 
                                       value={editingAsset.riskRating || 'Low'}
                                       onChange={(e) => setEditingAsset({...editingAsset, riskRating: e.target.value})}
-                                      className="w-full px-2 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white text-xs"
+                                      className="w-full px-2 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white text-xs text-slate-800"
                                   >
                                       {RISK_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
                                   </select>
@@ -1434,7 +1530,7 @@ function App() {
                                       type="text"
                                       value={editingAsset.age || ''}
                                       onChange={(e) => setEditingAsset({...editingAsset, age: e.target.value})}
-                                      className="w-full px-2 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 text-xs"
+                                      className="w-full px-2 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-xs text-slate-800 bg-white"
                                       placeholder="e.g. 15"
                                   />
                               </div>
@@ -1444,7 +1540,7 @@ function App() {
                                       type="text"
                                       value={editingAsset.quantity}
                                       onChange={(e) => setEditingAsset({...editingAsset, quantity: e.target.value})}
-                                      className="w-full px-2 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 text-xs"
+                                      className="w-full px-2 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-xs text-slate-800 bg-white"
                                   />
                               </div>
                           </div>
@@ -1454,7 +1550,7 @@ function App() {
                               <textarea 
                                   value={editingAsset.justification}
                                   onChange={(e) => setEditingAsset({...editingAsset, justification: e.target.value})}
-                                  className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm h-16"
+                                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm h-16 text-slate-800 bg-white"
                                   placeholder="Why is it in this condition?"
                               />
                           </div>
@@ -1464,9 +1560,9 @@ function App() {
                               <textarea 
                                   value={editingAsset.notes || ''}
                                   onChange={(e) => setEditingAsset({...editingAsset, notes: e.target.value})}
-                                  className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm h-16 bg-yellow-50"
+                                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm h-16 bg-yellow-50 text-slate-800"
                                   placeholder="Add any additional notes or recommendations..."
-                              />
+                               />
                           </div>
 
                           <div className="grid grid-cols-2 gap-4">
@@ -1476,7 +1572,7 @@ function App() {
                                       type="text"
                                       value={editingAsset.cost}
                                       onChange={(e) => setEditingAsset({...editingAsset, cost: e.target.value})}
-                                      className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm"
+                                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm text-slate-800 bg-white"
                                   />
                               </div>
                               <div>
@@ -1485,7 +1581,7 @@ function App() {
                                       type="text"
                                       value={editingAsset.rul}
                                       onChange={(e) => setEditingAsset({...editingAsset, rul: e.target.value})}
-                                      className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm"
+                                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm text-slate-800 bg-white"
                                   />
                               </div>
                           </div>
@@ -1544,6 +1640,54 @@ function App() {
                   </h1>
                   <p className="text-xs text-gray-500">ISO 55001:2024 Compliant</p>
               </div>
+
+              {/* COLLABORATION & MULTI-USER INDICATOR */}
+              {effectiveIsOnline && viewMode === 'single' && appState.view !== 'welcome' && (
+                  <div className="flex items-center gap-3 bg-slate-50 border border-slate-100 px-3 py-1.5 rounded-xl shadow-xs">
+                      <div className="flex items-center -space-x-2">
+                          {/* Active user (You) */}
+                          <div 
+                              onClick={() => setShowProfileModal(true)}
+                              className={`relative w-8 h-8 rounded-full border-2 border-indigo-600 flex items-center justify-center text-xs font-bold cursor-pointer hover:scale-105 transition-transform ${getAvatarColor(inspectorProfile.email)}`}
+                              title={`You: ${inspectorProfile.name} (${inspectorProfile.email}) - Click to customize`}
+                          >
+                              {getInitials(inspectorProfile.name, inspectorProfile.email)}
+                              <span className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border border-white ${isEditingPresence ? 'bg-green-500' : 'bg-gray-400'}`}></span>
+                          </div>
+
+                          {/* Other active inspectors */}
+                          {activePresences.map((p) => (
+                              <div 
+                                  key={p.userId}
+                                  className={`relative w-8 h-8 rounded-full border-2 border-white flex items-center justify-center text-xs font-bold group ${getAvatarColor(p.email)}`}
+                              >
+                                  {getInitials('', p.email)}
+                                  <span className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border border-white ${p.isEditing ? 'bg-green-500 animate-pulse' : 'bg-gray-400'}`}></span>
+                                  
+                                  {/* Sleek Tooltip */}
+                                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-50 bg-slate-900 text-white text-[10px] p-2 rounded shadow-xl whitespace-nowrap text-left leading-normal">
+                                      <p className="font-bold">{p.email}</p>
+                                      <p className="text-slate-400">Status: {p.isEditing ? '🟢 Active Editor' : '⚪ Just Viewing'}</p>
+                                      <p className="text-[8px] text-slate-500 font-mono mt-0.5 truncate max-w-[150px]">{p.device}</p>
+                                  </div>
+                              </div>
+                          ))}
+                      </div>
+                      
+                      <div className="hidden sm:block text-[10px] text-gray-500">
+                          {activePresences.length === 0 ? (
+                              <span className="text-green-600 font-medium flex items-center gap-1">
+                                  <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span> Only you here
+                              </span>
+                          ) : (
+                              <span className="text-indigo-600 font-bold">
+                                  {activePresences.length + 1} Inspectors Active
+                              </span>
+                          )}
+                      </div>
+                  </div>
+              )}
+
               <div className="flex gap-2 items-center">
                   {viewMode === 'single' ? (
                       <button onClick={loadPortfolio} className="bg-purple-100 text-purple-700 px-3 py-2 rounded-lg text-xs font-bold hover:bg-purple-200 transition flex items-center gap-1">
@@ -1593,7 +1737,64 @@ function App() {
               </div>
           </header>
 
+          {/* CONCURRENT EDIT / READ-ONLY LOCK BANNER */}
+          {effectiveIsOnline && viewMode === 'single' && !hasEditLock && (
+              <div className="bg-red-50 border-2 border-red-200 text-red-900 p-4 rounded-xl mb-6 shadow-md flex flex-wrap items-center justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 bg-red-100 text-red-600 rounded-full flex items-center justify-center shrink-0 animate-pulse">
+                          <span className="material-icons">lock</span>
+                      </div>
+                      <div>
+                          <p className="font-bold text-sm">🔒 Read-Only Mode: Concurrent Editor Active</p>
+                          <p className="text-xs text-gray-600">
+                              Another inspector ({activePresences.find(p => p.isEditing)?.email || 'another user'}) is currently editing this site.
+                              Your inputs are locked to prevent overwrite conflicts.
+                          </p>
+                      </div>
+                  </div>
+                  <button 
+                      onClick={() => {
+                          setIsEditingPresence(true);
+                          if (currentInspectionId) {
+                              firebaseService.updatePresence(currentInspectionId, inspectorProfile.userId, inspectorProfile.email, true);
+                          }
+                      }}
+                      className="bg-red-600 hover:bg-red-700 text-white font-bold px-4 py-2 rounded-lg text-xs shadow transition transform active:scale-95 flex items-center gap-1.5"
+                  >
+                      <span className="material-icons text-sm">lock_open</span> Claim Edit Lock
+                  </button>
+              </div>
+          )}
+
           {viewMode === 'portfolio' ? (
+              <PortfolioView
+                  portfolioData={portfolioData}
+                  portfolioSearch={portfolioSearch}
+                  setPortfolioSearch={setPortfolioSearch}
+                  portfolioStatusFilter={portfolioStatusFilter}
+                  setPortfolioStatusFilter={setPortfolioStatusFilter}
+                  selectedMapSiteId={selectedMapSiteId}
+                  setSelectedMapSiteId={setSelectedMapSiteId}
+                  mapLayerType={mapLayerType}
+                  setMapLayerType={setMapLayerType}
+                  openInspection={openInspection}
+                  riskChartData={riskChartData}
+                  pendingQueueCount={pendingQueueCount}
+                  syncMessage={syncMessage}
+                  syncingOfflineData={syncingOfflineData}
+                  setSyncingOfflineData={setSyncingOfflineData}
+                  setSyncMessage={setSyncMessage}
+                  setPendingQueueCount={setPendingQueueCount}
+                  setPortfolioData={setPortfolioData}
+                  effectiveIsOnline={effectiveIsOnline}
+                  activePresences={activePresences}
+                  hasEditLock={hasEditLock}
+                  isEditingPresence={isEditingPresence}
+                  setIsEditingPresence={setIsEditingPresence}
+                  currentInspectionId={currentInspectionId}
+                  inspectorProfile={inspectorProfile}
+              />
+          ) : false ? (
               <div className="flex-1 p-4 animate-fade-in flex flex-col gap-6">
                   
                   {/* Realtime Connection Sync Queue Monitor Bar */}
@@ -2037,167 +2238,107 @@ function App() {
               </div>
           ) : (
               <>
-                  {appState.view === 'welcome' && (
-                      <div className="flex-1 flex items-center justify-center p-4">
-                          <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-lg w-full transform transition-all animate-fade-in-up">
-                              <div className="text-center mb-8">
-                                  <div className="w-16 h-16 bg-indigo-100 rounded-full flex items-center justify-center mx-auto mb-4 text-indigo-600">
-                                      <span className="material-icons text-4xl">assignment</span>
-                                  </div>
-                                  <h2 className="text-2xl font-bold text-gray-800">Site Information</h2>
-                              </div>
-                              <div className="space-y-4">
-                                  <div>
-                                      <label className="block text-sm font-medium text-gray-700 mb-1">Site / Building Name *</label>
-                                      <input 
-                                          className="w-full px-4 py-3 rounded-lg bg-gray-50 border border-gray-200 focus:ring-2 focus:ring-indigo-500 focus:bg-white transition text-black placeholder-gray-500"
-                                          placeholder="e.g. Dubbo Civic Centre"
-                                          value={appState.siteInfo.name}
-                                          onChange={(e) => handleSiteInfoChange('name', e.target.value)}
-                                      />
-                                  </div>
-                                  <div>
-                                      <label className="block text-sm font-medium text-gray-700 mb-1">Site Address *</label>
-                                      <div className="relative text-left">
-                                          <div className="flex gap-2">
-                                              <div className="relative flex-1">
-                                                  <input 
-                                                      className="w-full px-4 py-3 rounded-lg bg-gray-50 border border-gray-200 focus:ring-2 focus:ring-indigo-500 focus:bg-white transition text-black placeholder-gray-500 pr-10"
-                                                      placeholder="e.g. 123 Main St"
-                                                      value={appState.siteInfo.address}
-                                                      onChange={(e) => handleAddressInputChange(e.target.value)}
-                                                      onFocus={() => {
-                                                          if (addressSuggestions.length > 0) setShowSuggestions(true);
-                                                      }}
-                                                  />
-                                                  {isSearchingAddress && (
-                                                      <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center">
-                                                          <svg className="animate-spin h-5 w-5 text-indigo-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                                          </svg>
-                                                      </div>
-                                                  )}
-                                              </div>
-                                              <button 
-                                                  onClick={detectLocation}
-                                                  className="px-4 py-2 bg-indigo-100 text-indigo-700 rounded-lg hover:bg-indigo-200 flex items-center justify-center gap-1 transition"
-                                                  title="Detect Location"
-                                              >
-                                                  <span className="material-icons">my_location</span>
-                                              </button>
-                                          </div>
-
-                                          {/* Autocomplete Suggestions Menu Dropdown */}
-                                          {showSuggestions && addressSuggestions.length > 0 && (
-                                              <div className="absolute z-50 left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-60 overflow-y-auto divide-y divide-gray-100">
-                                                  {addressSuggestions.map((suggestion, idx) => (
-                                                      <button
-                                                          key={idx}
-                                                          type="button"
-                                                          onClick={() => handleSelectSuggestion(suggestion)}
-                                                          className="w-full text-left px-4 py-3 hover:bg-indigo-50/50 text-xs text-slate-800 transition flex flex-col gap-0.5"
-                                                      >
-                                                          <div className="font-semibold text-gray-900 truncate">{suggestion.label}</div>
-                                                          <div className="font-mono text-[9px] text-gray-400">Coords: {suggestion.latitude.toFixed(4)}, {suggestion.longitude.toFixed(4)}</div>
-                                                      </button>
-                                                  ))}
-                                              </div>
-                                          )}
-                                      </div>
-
-                                      {/* Dynamic Location Error Alert */}
-                                      {addressError && (
-                                          <div className="mt-2 text-xs bg-red-50 border border-red-100 text-red-700 p-2.5 rounded-lg flex items-start gap-1.5 shadow-sm">
-                                              <span className="material-icons text-red-500 text-sm mt-0.5 animate-bounce">info</span>
-                                              <span className="leading-relaxed">{addressError}</span>
-                                          </div>
-                                      )}
-                                  </div>
-                                  <div>
-                                      <label className="block text-sm font-medium text-gray-700 mb-1">Number of Rooms</label>
-                                      <input 
-                                          type="number"
-                                          className="w-full px-4 py-3 rounded-lg bg-gray-50 border border-gray-200 focus:ring-2 focus:ring-indigo-500 focus:bg-white transition text-black placeholder-gray-500"
-                                          value={appState.siteInfo.numRooms}
-                                          onChange={(e) => handleSiteInfoChange('numRooms', parseInt(e.target.value))}
-                                      />
-                                  </div>
-
-                                  <div className="border border-dashed border-gray-300 p-4 rounded-xl">
-                                      <label className="block text-sm font-medium text-gray-700 mb-2">Service / PM Reports (PDF/Image)</label>
-                                      <label className="flex items-center justify-center w-full p-4 border-2 border-dashed border-indigo-200 bg-indigo-50 rounded-lg cursor-pointer hover:bg-indigo-100 transition">
-                                          <div className="flex flex-col items-center">
-                                              <span className="material-icons text-indigo-500 mb-1">upload_file</span>
-                                              <span className="text-xs text-indigo-700 font-medium">Upload Document for AI Analysis</span>
-                                          </div>
-                                          <input type="file" className="hidden" accept="application/pdf,image/*" onChange={handleDocumentUpload} />
-                                      </label>
-                                      {appState.siteInfo.documents && appState.siteInfo.documents.length > 0 && (
-                                          <div className="mt-3 space-y-2">
-                                              <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wide">Processed Documents</h4>
-                                              {appState.siteInfo.documents.map(doc => (
-                                                  <div key={doc.id} className="bg-gray-100 p-2 rounded text-xs flex justify-between items-center group">
-                                                      <div className="truncate font-medium text-gray-700" title={doc.summary}>
-                                                          <span className="material-icons text-sm align-middle mr-1 text-gray-500">description</span>
-                                                          {doc.name}
-                                                      </div>
-                                                      <button 
-                                                          onClick={() => {
-                                                              setAppState(prev => ({
-                                                                  ...prev,
-                                                                  siteInfo: {
-                                                                      ...prev.siteInfo,
-                                                                      documents: prev.siteInfo.documents?.filter(d => d.id !== doc.id)
-                                                                  }
-                                                              }));
-                                                          }}
-                                                          className="text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
-                                                      >
-                                                          <span className="material-icons text-sm">close</span>
-                                                      </button>
-                                                  </div>
-                                              ))}
-                                          </div>
-                                      )}
-                                  </div>
-
-                                  <div className="border border-dashed border-gray-300 p-4 rounded-xl mt-4">
-                                      <label className="block text-sm font-medium text-gray-700 mb-2">Vendor Asset Register / Audit Report</label>
-                                      <p className="text-xs text-gray-500 mb-3">Upload a vendor asset register or inspection report (PDF, Excel, image). The AI can extract elements from tables, lists, or unstructured narrative text to automatically populate the assessment.</p>
-                                      <label className="flex items-center justify-center w-full p-4 border-2 border-dashed border-green-200 bg-green-50 rounded-lg cursor-pointer hover:bg-green-100 transition">
-                                          <div className="flex flex-col items-center">
-                                              <span className="material-icons text-green-500 mb-1">domain_verification</span>
-                                              <span className="text-xs text-green-700 font-medium">Extract Vendor Data</span>
-                                          </div>
-                                          <input type="file" className="hidden" accept=".csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/pdf,image/*" onChange={handleVendorRegisterUpload} />
-                                      </label>
-                                  </div>
-
-                                  <div className="bg-blue-50 p-4 rounded-lg flex items-start gap-3 mt-4">
-                                      <span className="material-icons text-blue-600 mt-1">security</span>
-                                      <div className="text-xs text-blue-800">
-                                          <strong>Privacy Note:</strong> Turn on "Privacy Mode" in the top right to anonymize site data sent to AI.
-                                      </div>
-                                  </div>
-
-                                  <button 
-                                      onClick={startAssessment}
-                                      disabled={!appState.siteInfo.name || !appState.siteInfo.address}
-                                      className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 rounded-xl shadow-lg transform active:scale-95 transition-all mt-6 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                                  >
-                                      <span className="material-icons">play_circle</span> START ASSESSMENT
-                                  </button>
-                                  
-                                  <button onClick={loadDemo} className="w-full text-indigo-600 text-sm font-medium hover:underline">
-                                      Load Demo Data
-                                  </button>
-                              </div>
-                          </div>
+                  {appState.view !== 'welcome' && (
+                      <div className="bg-white/95 backdrop-blur rounded-2xl shadow-lg p-1.5 mb-6 flex flex-wrap md:flex-nowrap gap-1.5 border border-slate-200 max-w-4xl mx-auto items-center justify-center">
+                          <button
+                              onClick={() => setAppState(prev => ({ ...prev, view: 'welcome' }))}
+                              className="flex-1 py-2 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 text-gray-600 hover:bg-slate-50 hover:text-indigo-600"
+                              title="Go back to Site details & Setup"
+                          >
+                              <span className="material-icons text-sm text-slate-500">arrow_back</span>
+                              Site Setup
+                          </button>
+                          <button
+                              onClick={() => setAppState(prev => ({ ...prev, view: 'assessment' }))}
+                              className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+                                  appState.view === 'assessment'
+                                      ? 'bg-indigo-600 text-white shadow'
+                                      : 'text-gray-600 hover:bg-slate-50'
+                              }`}
+                          >
+                              <span className="material-icons text-sm">assignment</span>
+                              Asset Assessment
+                          </button>
+                          <button
+                              onClick={() => setAppState(prev => ({ ...prev, view: 'reconstruction' }))}
+                              className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+                                  appState.view === 'reconstruction'
+                                      ? 'bg-indigo-600 text-white shadow'
+                                      : 'text-gray-600 hover:bg-slate-50'
+                              }`}
+                          >
+                              <span className="material-icons text-sm">architecture</span>
+                              Layout Recreator
+                          </button>
+                          <button
+                              onClick={() => setAppState(prev => ({ ...prev, view: 'ai-agent-os' }))}
+                              className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+                                  appState.view === 'ai-agent-os'
+                                      ? 'bg-indigo-600 text-white shadow'
+                                      : 'text-gray-600 hover:bg-slate-50'
+                              }`}
+                          >
+                              <span className="material-icons text-sm">psychology</span>
+                              AI Agent OS
+                          </button>
+                          <button
+                              onClick={() => setAppState(prev => ({ ...prev, view: 'summary' }))}
+                              className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+                                  appState.view === 'summary'
+                                      ? 'bg-indigo-600 text-white shadow'
+                                      : 'text-gray-600 hover:bg-slate-50'
+                              }`}
+                          >
+                              <span className="material-icons text-sm">summarize</span>
+                              Summary
+                          </button>
                       </div>
                   )}
 
+                  {appState.view === 'welcome' && (
+                      <WelcomeView
+                          siteInfo={appState.siteInfo}
+                          handleSiteInfoChange={handleSiteInfoChange}
+                          addressSuggestions={addressSuggestions}
+                          showSuggestions={showSuggestions}
+                          setShowSuggestions={setShowSuggestions}
+                          isSearchingAddress={isSearchingAddress}
+                          addressError={addressError}
+                          detectLocation={detectLocation}
+                          handleAddressInputChange={handleAddressInputChange}
+                          handleSelectSuggestion={handleSelectSuggestion}
+                          handleDocumentUpload={handleDocumentUpload}
+                          handleVendorRegisterUpload={handleVendorRegisterUpload}
+                          startAssessment={startAssessment}
+                          loadDemo={loadDemo}
+                          setAppState={setAppState}
+                      />
+                  )}
+
                   {appState.view === 'assessment' && currentRoom && (
+                      <RoomAssessmentView
+                          currentRoomIndex={appState.currentRoomIndex}
+                          rooms={appState.rooms}
+                          currentRoom={currentRoom}
+                          goToPrevPage={goToPrevPage}
+                          goToNextPage={goToNextPage}
+                          updateCurrentRoom={updateCurrentRoom}
+                          handleImageUpload={handleImageUpload}
+                          generateAssetsWithAI={generateAssetsWithAI}
+                          processing={processing}
+                          updateAsset={updateAsset}
+                          setEditingAsset={setEditingAsset}
+                          batchMode={batchMode}
+                          toggleBatchMode={toggleBatchMode}
+                          selectedAssetIds={selectedAssetIds}
+                          toggleAssetSelection={toggleAssetSelection}
+                          batchAction={batchAction}
+                          setPreviewImage={setPreviewImage}
+                          hasEditLock={hasEditLock}
+                      />
+                  )}
+
+                  {appState.view === 'assessment' && currentRoom && false && (
                       <div className="space-y-6 animate-fade-in pb-24">
                           <div className="flex justify-between items-center text-white mb-2">
                               <button onClick={goToPrevPage} className="flex items-center gap-1 hover:text-indigo-200 transition">
@@ -2504,174 +2645,63 @@ function App() {
                       </div>
                   )}
 
-                  {appState.view === 'summary' && (
-                      <div className="flex-1 p-4 flex items-center justify-center">
-                          <div className="bg-white rounded-2xl shadow-xl p-8 max-w-2xl w-full animate-fade-in-up">
-                              <div className="text-center mb-8">
-                                  <h2 className="text-3xl font-bold text-gray-800 mb-2">Assessment Complete!</h2>
-                                  <p className="text-gray-500">Your data has been saved locally. Review the Site Notes and Export.</p>
-                              </div>
-
-                              {/* Real-time Asset Risk Distribution & Visual Health Report */}
-                              <div className="border border-gray-100 bg-gray-50/50 rounded-2xl p-6 mb-8 shadow-sm">
-                                  <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider mb-4 flex items-center gap-2">
-                                      <span className="material-icons text-indigo-600 text-lg">donut_large</span>
-                                      Visual Health Report (Risk Profile)
-                                  </h3>
-                                  
-                                  {currentAssessmentRiskDistribution.totalAssets === 0 ? (
-                                      <div className="text-center py-6 text-gray-400 text-sm">
-                                          <span className="material-icons text-3xl mb-1 block">grid_view</span>
-                                          No assets logged in this assessment yet. Undergo camera audits to register assets.
-                                      </div>
-                                  ) : (
-                                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-center">
-                                          {/* Donut Chart with Centered Total Count */}
-                                          <div className="relative flex items-center justify-center h-[200px]">
-                                              <ResponsiveContainer width="100%" height="105%">
-                                                  <PieChart>
-                                                      <Pie
-                                                          data={currentAssessmentRiskDistribution.chartData}
-                                                          cx="50%"
-                                                          cy="50%"
-                                                          innerRadius={60}
-                                                          outerRadius={80}
-                                                          paddingAngle={4}
-                                                          dataKey="value"
-                                                      >
-                                                          {currentAssessmentRiskDistribution.chartData.map((entry, index) => (
-                                                              <Cell key={`cell-${index}`} fill={RISK_COLORS[entry.name] || '#10B981'} />
-                                                          ))}
-                                                      </Pie>
-                                                      <RechartsTooltip 
-                                                          formatter={(value: any) => [`${value} Asset(s)`, 'Count']}
-                                                          contentStyle={{ borderRadius: '8px', border: '1px solid #E2E8F0', fontSize: '12px' }}
-                                                      />
-                                                  </PieChart>
-                                              </ResponsiveContainer>
-                                              
-                                              {/* Absolute Center Text */}
-                                              <div className="absolute flex flex-col items-center justify-center pointer-events-none">
-                                                  <span className="text-3xl font-extrabold text-gray-800 leading-none">
-                                                      {currentAssessmentRiskDistribution.totalAssets}
-                                                  </span>
-                                                  <span className="text-[10px] text-gray-400 uppercase font-bold tracking-wider mt-1">
-                                                      Total Assets
-                                                  </span>
-                                              </div>
-                                          </div>
-                                          
-                                          {/* Risk Distribution Details & Insight */}
-                                          <div className="space-y-3">
-                                              <div className="space-y-1.5">
-                                                  {RISK_OPTIONS.map((risk: string) => { const count = (currentAssessmentRiskDistribution.counts as Record<string, number>)[risk] || 0;
-                                                      const percentage = currentAssessmentRiskDistribution.totalAssets > 0 
-                                                          ? Math.round((count / currentAssessmentRiskDistribution.totalAssets) * 100) 
-                                                          : 0;
-                                                      return (
-                                                          <div key={risk} className="flex items-center justify-between text-xs text-gray-600">
-                                                              <div className="flex items-center gap-2">
-                                                                  <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: RISK_COLORS[risk] }}></span>
-                                                                  <span className="font-semibold text-gray-700">{risk} Risk:</span>
-                                                              </div>
-                                                              <span className="font-mono text-gray-500 font-medium">
-                                                                  {count} ({percentage}%)
-                                                              </span>
-                                                          </div>
-                                                      );
-                                                  })}
-                                              </div>
-                                              
-                                              <div className="pt-3 border-t border-gray-100">
-                                                  <p className="text-[11px] leading-relaxed text-gray-500 font-medium">
-                                                      {currentAssessmentRiskDistribution.counts.Extreme > 0 ? (
-                                                          <span className="text-red-600 flex items-start gap-1">
-                                                              <span className="material-icons text-xs mt-0.5">warning</span>
-                                                              <span><strong>Action Required:</strong> Critical operations attention needed for {currentAssessmentRiskDistribution.counts.Extreme} extreme risk item(s).</span>
-                                                          </span>
-                                                      ) : currentAssessmentRiskDistribution.counts.High > 0 ? (
-                                                          <span className="text-orange-600 flex items-start gap-1">
-                                                              <span className="material-icons text-xs mt-0.5">warning</span>
-                                                              <span><strong>Alert:</strong> Schedule remediation works for {currentAssessmentRiskDistribution.counts.High} high risk asset(s).</span>
-                                                          </span>
-                                                      ) : (
-                                                          <span className="text-green-600 flex items-start gap-1">
-                                                              <span className="material-icons text-xs mt-0.5">check_circle</span>
-                                                              <span><strong>Stable:</strong> Site exhibits a low risk-density profile. Ready to export.</span>
-                                                          </span>
-                                                      )}
-                                                  </p>
-                                              </div>
-                                          </div>
-                                      </div>
-                                  )}
-                              </div>
-
-                              <div className="mb-8">
-                                  <label className="block text-sm font-bold text-gray-700 mb-2 flex items-center gap-2">
-                                      <span className="material-icons text-indigo-600">assignment</span>
-                                      Site Notes / Executive Summary
-                                  </label>
-                                  <textarea 
-                                      className="w-full px-4 py-3 rounded-lg bg-gray-50 border border-gray-200 focus:ring-2 focus:ring-indigo-500 focus:bg-white transition text-black placeholder-gray-500 h-40 text-sm leading-relaxed"
-                                      placeholder="General observations, executive summary, or key recommendations..."
-                                      value={appState.siteInfo.notes}
-                                      onChange={(e) => handleSiteInfoChange('notes', e.target.value)}
-                                      onBlur={saveGlobalState}
-                                  />
-                                  <p className="text-xs text-gray-500 mt-1 italic">
-                                      * This section is automatically populated with a summary of your conversation with the AI Engineering Manager.
-                                  </p>
-                              </div>
-
-                              <div className="bg-blue-50 border border-blue-100 rounded-lg p-4 mb-8">
-                                  <h4 className="font-bold text-blue-800 mb-2 flex items-center gap-2">
-                                      <span className="material-icons text-sm">info</span> Export Options
-                                  </h4>
-                                  <ul className="text-sm text-blue-700 space-y-1">
-                                      <li>• <strong>Excel & CSV:</strong> Complete datasets + Site Notes.</li>
-                                      <li>• <strong>PDF:</strong> Professional report + Executive Summary.</li>
-                                      <li>• <strong>JSON & RAG:</strong> Structured data for technical use.</li>
-                                  </ul>
-                              </div>
-
-                              <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-8">
-                                  <button onClick={exportToExcel} className="bg-green-600 hover:bg-green-700 text-white py-4 rounded-xl shadow-lg flex flex-col items-center gap-2 transition transform hover:scale-105">
-                                      <span className="material-icons text-2xl">description</span>
-                                      <span className="font-bold text-sm">Excel</span>
-                                  </button>
-                                  <button onClick={exportToCSV} className="bg-emerald-600 hover:bg-emerald-700 text-white py-4 rounded-xl shadow-lg flex flex-col items-center gap-2 transition transform hover:scale-105">
-                                      <span className="material-icons text-2xl">table_rows</span>
-                                      <span className="font-bold text-sm">CSV</span>
-                                  </button>
-                                  <button onClick={exportToPDF} className="bg-red-600 hover:bg-red-700 text-white py-4 rounded-xl shadow-lg flex flex-col items-center gap-2 transition transform hover:scale-105">
-                                      <span className="material-icons text-2xl">picture_as_pdf</span>
-                                      <span className="font-bold text-sm">PDF Report</span>
-                                  </button>
-                                  <button onClick={exportToJSON} className="bg-amber-600 hover:bg-amber-700 text-white py-4 rounded-xl shadow-lg flex flex-col items-center gap-2 transition transform hover:scale-105">
-                                      <span className="material-icons text-2xl">javascript</span>
-                                      <span className="font-bold text-sm">JSON</span>
-                                  </button>
-                                  <button onClick={exportForRAG} className="bg-sky-600 hover:bg-sky-700 text-white py-4 rounded-xl shadow-lg flex flex-col items-center gap-2 transition transform hover:scale-105">
-                                      <span className="material-icons text-2xl">hub</span>
-                                      <span className="font-bold text-sm">RAG Sync</span>
-                                  </button>
-                              </div>
-
-                              <div className="flex flex-col gap-3">
-                                  <button onClick={() => setAppState(prev => ({ ...prev, view: 'assessment', currentRoomIndex: 0 }))} className="text-indigo-600 font-medium hover:underline">
-                                      Return to Review
-                                  </button>
-                                  <button 
-                                      onClick={handleReset} 
-                                      className="mt-4 border border-red-200 text-red-500 hover:bg-red-50 py-3 rounded-xl text-sm font-medium transition flex items-center justify-center gap-2"
-                                  >
-                                      <span className="material-icons text-sm">delete_forever</span>
-                                      Start New Assessment (Clear Data)
-                                  </button>
-                              </div>
-                          </div>
+                  {appState.view === 'reconstruction' && (
+                      <div className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8">
+                          <ArchitecturalReconstruction
+                              siteInfo={appState.siteInfo}
+                              rooms={appState.rooms}
+                              onUpdateSiteInfo={(key, value) => {
+                                  setAppState(prev => {
+                                      const updatedSiteInfo = { ...prev.siteInfo, [key]: value };
+                                      firebaseService.saveState(updatedSiteInfo, prev.rooms);
+                                      return { ...prev, siteInfo: updatedSiteInfo };
+                                  });
+                              }}
+                              onSave={saveGlobalState}
+                              hasEditLock={hasEditLock}
+                          />
                       </div>
+                  )}
+
+                  {appState.view === 'ai-agent-os' && (
+                      <div className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8">
+                          <AIAgentOS
+                              siteInfo={appState.siteInfo}
+                              rooms={appState.rooms}
+                              onUpdateSiteInfo={(key, value) => {
+                                  setAppState(prev => {
+                                      const updatedSiteInfo = { ...prev.siteInfo, [key]: value };
+                                      firebaseService.saveState(updatedSiteInfo, prev.rooms);
+                                      return { ...prev, siteInfo: updatedSiteInfo };
+                                  });
+                              }}
+                              onUpdateRooms={(updatedRooms) => {
+                                  setAppState(prev => {
+                                      firebaseService.saveState(prev.siteInfo, updatedRooms);
+                                      return { ...prev, rooms: updatedRooms };
+                                  });
+                              }}
+                              onSave={saveGlobalState}
+                              hasEditLock={hasEditLock}
+                          />
+                      </div>
+                  )}
+
+                  {appState.view === 'summary' && (
+                      <AssessmentSummaryView
+                          siteInfo={appState.siteInfo}
+                          rooms={appState.rooms}
+                          currentAssessmentRiskDistribution={currentAssessmentRiskDistribution}
+                          handleSiteInfoChange={handleSiteInfoChange}
+                          saveGlobalState={saveGlobalState}
+                          exportToExcel={exportToExcel}
+                          exportToCSV={exportToCSV}
+                          exportToPDF={exportToPDF}
+                          exportToJSON={exportToJSON}
+                          exportForRAG={exportForRAG}
+                          setAppState={setAppState}
+                          handleReset={handleReset}
+                      />
                   )}
               </>
           )}

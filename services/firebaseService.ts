@@ -1,33 +1,92 @@
 
 import { initializeApp } from "firebase/app";
-import { getFirestore, doc, setDoc, getDoc, collection, writeBatch, getDocs } from "firebase/firestore";
+import { getFirestore, doc, setDoc, getDoc, collection, writeBatch, getDocs, onSnapshot, deleteDoc } from "firebase/firestore";
 import { getStorage, ref, uploadString, getDownloadURL } from "firebase/storage";
+import { getAuth, signInAnonymously } from "firebase/auth";
 import { get, set, clear, del } from 'idb-keyval';
 import { Room, SiteInfo } from '../types';
+import appletConfig from "../firebase-applet-config.json";
 
 // ==============================================================
 // FIREBASE CONFIGURATION (Connected to 'building-asset-capture')
 // ==============================================================
 const firebaseConfig = {
-  apiKey: "AIzaSyALGJMHG6fYH6ZztUEtLfjTE_reU1C8yXU",
-  authDomain: "building-asset-capture.firebaseapp.com",
-  projectId: "building-asset-capture",
-  storageBucket: "building-asset-capture.firebasestorage.app",
-  messagingSenderId: "626380950826", 
-  appId: "1:626380950826:web:1cf13f91456df047596253" 
+  apiKey: appletConfig.apiKey || "AIzaSyALGJMHG6fYH6ZztUEtLfjTE_reU1C8yXU",
+  authDomain: appletConfig.authDomain || "building-asset-capture.firebaseapp.com",
+  projectId: appletConfig.projectId || "building-asset-capture",
+  storageBucket: appletConfig.storageBucket || "building-asset-capture.firebasestorage.app",
+  messagingSenderId: appletConfig.messagingSenderId || "626380950826", 
+  appId: appletConfig.appId || "1:626380950826:web:1cf13f91456df047596253" 
 };
 
 // Initialize Firebase
 let db: any;
 let storage: any;
+let auth: any;
 let isConfigured = false;
+
+// Strict Firestore Error standard from system skill instructions
+export enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+export interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+    tenantId?: string | null;
+    providerInfo?: {
+      providerId?: string | null;
+      email?: string | null;
+    }[];
+  };
+}
+
+export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errMessage = error instanceof Error ? error.message : String(error);
+  const errInfo: FirestoreErrorInfo = {
+    error: errMessage,
+    authInfo: {
+      userId: auth?.currentUser?.uid || null,
+      email: auth?.currentUser?.email || null,
+      emailVerified: auth?.currentUser?.emailVerified || null,
+      isAnonymous: auth?.currentUser?.isAnonymous || null,
+      tenantId: auth?.currentUser?.tenantId || null,
+      providerInfo: auth?.currentUser?.providerData?.map((p: any) => ({
+        providerId: p.providerId,
+        email: p.email,
+      })) || []
+    },
+    operationType,
+    path
+  };
+  console.error('Firestore Error Detailed Info:', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
 
 try {
     const app = initializeApp(firebaseConfig);
-    db = getFirestore(app);
+    const dbId = appletConfig.firestoreDatabaseId;
+    db = dbId ? getFirestore(app, dbId) : getFirestore(app);
     storage = getStorage(app);
+    auth = getAuth(app);
     isConfigured = true;
-    console.log("✅ Firebase Initialized: DB + Storage Ready");
+    console.log("✅ Firebase Initialized: DB + Storage + Auth Ready with Database ID:", dbId || "default");
+
+    // Optional/Best-effort anonymous authentication to ensure valid credentials inside Firestore/Storage environments
+    signInAnonymously(auth)
+        .then(() => console.log("🔐 Authenticated anonymously to Firebase"))
+        .catch(e => console.warn("⚠️ Anonymous login deferred/disabled on project console:", e.message));
 } catch (e) {
     console.error("Firebase Initialization Error:", e);
 }
@@ -306,6 +365,18 @@ export class FirebaseService {
     console.log(`Cloud Sync Initiated: ${siteInfo.name}`);
     
     const roomsForSave = JSON.parse(JSON.stringify(rooms)); 
+    const siteInfoForSave = JSON.parse(JSON.stringify(siteInfo));
+
+    if (siteInfoForSave.documents) {
+        for (let i = 0; i < siteInfoForSave.documents.length; i++) {
+            const docItem = siteInfoForSave.documents[i];
+            if (docItem.dataUrl && docItem.dataUrl.startsWith('data:')) {
+                const ext = docItem.mimeType === 'application/pdf' ? 'pdf' : 'jpg';
+                const cloudPath = `inspections/${inspectionId}/documents/${docItem.id}.${ext}`;
+                docItem.dataUrl = await this.uploadImage(docItem.dataUrl, cloudPath);
+            }
+        }
+    }
 
     for (const room of roomsForSave) {
         if (room.images) {
@@ -327,12 +398,16 @@ export class FirebaseService {
         }
     }
 
-    await setDoc(inspectionDocRef, {
-      siteInfo,
-      rooms: roomsForSave,
-      lastUpdated: new Date().toISOString(),
-      device: navigator.userAgent
-    }, { merge: true });
+    try {
+        await setDoc(inspectionDocRef, {
+          siteInfo: siteInfoForSave,
+          rooms: roomsForSave,
+          lastUpdated: new Date().toISOString(),
+          device: navigator.userAgent
+        }, { merge: true });
+    } catch (e: any) {
+        handleFirestoreError(e, OperationType.WRITE, `inspections/${inspectionId}`);
+    }
 
     let batch = writeBatch(db); 
     let operationCount = 0;
@@ -354,7 +429,11 @@ export class FirebaseService {
             operationCount++;
             
             if (operationCount >= MAX_BATCH_SIZE) {
-                await batch.commit();
+                try {
+                    await batch.commit();
+                } catch (e: any) {
+                    handleFirestoreError(e, OperationType.WRITE, `inspections/${inspectionId}/assets-batch`);
+                }
                 batch = writeBatch(db); 
                 operationCount = 0; 
             }
@@ -362,7 +441,11 @@ export class FirebaseService {
     }
 
     if (operationCount > 0) {
-        await batch.commit();
+        try {
+            await batch.commit();
+        } catch (e: any) {
+            handleFirestoreError(e, OperationType.WRITE, `inspections/${inspectionId}/assets-batch-final`);
+        }
     }
     
     console.log(`✅ Fully Synced to Firebase: inspections/${inspectionId}`);
@@ -481,8 +564,8 @@ export class FirebaseService {
     };
 
     if (isConfigured && db && result.siteInfo?.name && navigator.onLine) {
+        const inspectionId = result.siteInfo.name.trim().replace(/\s+/g, '_').toLowerCase();
         try {
-            const inspectionId = result.siteInfo.name.trim().replace(/\s+/g, '_').toLowerCase();
             const docRef = doc(db, "inspections", inspectionId);
             const docSnap = await getDoc(docRef);
 
@@ -494,8 +577,11 @@ export class FirebaseService {
                     rooms: data.rooms as Room[]
                 };
             }
-        } catch (e) {
-            console.warn("⚠️ Using offline DB data (Cloud Error)");
+        } catch (e: any) {
+            console.warn("⚠️ Cloud Error reading from Firestore:", e.message);
+            if (e.code === 'permission-denied' || e.message?.toLowerCase().includes('permission') || e.message?.toLowerCase().includes('unauthorized')) {
+                handleFirestoreError(e, OperationType.GET, `inspections/${inspectionId}`);
+            }
         }
     }
 
@@ -534,10 +620,55 @@ export class FirebaseService {
           await set('all_local_inspections', localMap);
 
           return Object.values(localMap);
-      } catch (e) {
-          console.error("Error fetching inspections from Firestore:", e);
+      } catch (e: any) {
+          console.error("Error fetching inspections from Firestore:", e.message);
+          if (e.code === 'permission-denied' || e.message?.toLowerCase().includes('permission') || e.message?.toLowerCase().includes('unauthorized')) {
+              handleFirestoreError(e, OperationType.GET, "inspections");
+          }
           return offlineList;
       }
+  }
+
+  // Real-time Presence API for Multi-Inspector collaboration
+  async updatePresence(inspectionId: string, userId: string, email: string, isEditing: boolean): Promise<void> {
+    if (!isConfigured || !db) return;
+    const docRef = doc(db, "inspections", inspectionId, "presence", userId);
+    try {
+        await setDoc(docRef, {
+            userId,
+            email,
+            lastActive: new Date().toISOString(),
+            isEditing,
+            device: navigator.userAgent
+        }, { merge: true });
+    } catch (e) {
+        console.warn("Failed to update presence:", e);
+    }
+  }
+
+  listenToPresence(inspectionId: string, callback: (presences: any[]) => void): () => void {
+    if (!isConfigured || !db) {
+        callback([]);
+        return () => {};
+    }
+    const colRef = collection(db, "inspections", inspectionId, "presence");
+    return onSnapshot(colRef, (snapshot) => {
+        const list = snapshot.docs.map(doc => doc.data());
+        callback(list);
+    }, (err) => {
+        console.warn("Presence listen error:", err);
+        callback([]);
+    });
+  }
+
+  async removePresence(inspectionId: string, userId: string): Promise<void> {
+    if (!isConfigured || !db) return;
+    const docRef = doc(db, "inspections", inspectionId, "presence", userId);
+    try {
+        await deleteDoc(docRef);
+    } catch (e) {
+        console.warn("Failed to remove presence:", e);
+    }
   }
 
   async deleteDatabase(): Promise<void> {

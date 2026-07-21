@@ -1,0 +1,16 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Default-deny catch-all
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+
+    // Inspections bucket rules
+    match /inspections/{inspectionId}/{allPaths=**} {
+      // Allows anyone to read or write inspection assets (images/crops).
+      // For higher security, change this to: if request.auth != null;
+      allow read, write: if true;
+    }
+  }
+}
