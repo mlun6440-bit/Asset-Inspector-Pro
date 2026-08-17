@@ -1,6 +1,7 @@
 
 import { GoogleGenAI, Type, Schema } from "@google/genai";
 import { Asset, Room, SiteInfo, ChatMessage, WorkOrder } from '../types';
+import { safeParseJson, sanitizeDetectedAssets } from './schemas';
 
 // process.env.API_KEY is injected by the environment.
 const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY || '';
@@ -221,36 +222,8 @@ export const detectAssetsWithBoundingBoxes = async (images: { dataUrl: string }[
       }
     });
 
-    let rawAssets: any[] = [];
-    if (response.text) {
-        rawAssets = JSON.parse(response.text);
-    }
-
-    return rawAssets.map((a: any) => ({
-      id: a.id || crypto.randomUUID(),
-      name: `${a.category} - ${(a.description || '').substring(0, 30)}...`,
-      category: a.category, 
-      description: a.description || 'No description provided.',
-      condition: a.condition || 'Average',
-      riskRating: a.riskRating || "Low", 
-      justification: a.justification || 'No justification provided.',
-      quantity: String(a.quantity),
-      cost: String(a.cost),
-      age: String(a.age || '0'),
-      rul: String(a.rul),
-      notes: a.notes || "", 
-      verified: false,
-      aiDetected: true,
-      sourceImageIndex: a.sourceImageIndex,
-      boundingBox: a.boundingBox,
-      auditTrail: [{
-          timestamp: Date.now(),
-          actor: 'AI',
-          action: 'CREATED',
-          details: `Detected via Gemini 3.0 Flash. Confidence High.`
-      }]
-    }));
-
+    const rawAssets = safeParseJson<any[]>(response.text, []);
+    return sanitizeDetectedAssets(rawAssets);
   } catch (error) {
     console.error("Asset detection failed:", error);
     throw error;
@@ -381,6 +354,26 @@ export const createChatStream = async (
 
         ${docs}
         
+        ${(() => {
+          const agentOS = contextData.siteInfo?.agentOS;
+          if (agentOS?.cogneeGraph?.nodes && agentOS.cogneeGraph.nodes.length > 0) {
+            const g = agentOS.cogneeGraph;
+            const nodeSummary = g.nodes.slice(0, 30).map((n: any) => `[${n.type}] ${n.label}: ${n.description || ''}`).join('\n');
+            const edgeSummary = g.edges.slice(0, 30).map((e: any) => `${e.source} ➔ (${e.type}) ➔ ${e.target}: ${e.description || ''}`).join('\n');
+            return `
+        **COMPILED FACILITY KNOWLEDGE GRAPH (DETERMINISTIC TOPOLOGY - KARPATHY ENGINE):**
+        Nodes (${g.nodes.length} entities):
+        ${nodeSummary}
+
+        Active Relational & Causal Edges (${g.edges.length} links):
+        ${edgeSummary}
+
+        *Guideline: When answering questions regarding room impacts, domino failures, or asset interdependencies, ground your deductions directly on the above relational graph paths for 100% causal accuracy.*
+            `;
+          }
+          return '';
+        })()}
+
         **THE SCENARIO 3 LOGIC FRAMEWORK:**
         
         **1. VALUE (The 'Why')**

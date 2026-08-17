@@ -20,6 +20,7 @@ import {
   cognifyDataSources, queryCogneeGraph
 } from '../services/geminiService';
 import { AsBuiltDrawing, HistoricalVisionCapture } from '../types';
+import { compileFacilityKnowledgeGraph, analyzeGraphRiskPropagation, queryKnowledgeGraph, GraphCascadeRiskResult } from '../services/graphCompiler';
 
 const computeGraphLayout = (nodes: any[], edges: any[]) => {
   const width = 640;
@@ -255,128 +256,31 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
   }, [rooms]);
 
   const computedGraph = useMemo(() => {
-    const rawGraph = osState.cogneeGraph || { nodes: [], edges: [] };
-    let graph = rawGraph;
+    const rawGraph = osState.cogneeGraph;
+    let graph: CogneeGraphState;
     
-    // Fallback baseline graph if empty or uninitialized
-    if (!graph.nodes || graph.nodes.length === 0) {
-      const baseNodes: any[] = [];
-      const baseEdges: any[] = [];
-      
-      baseNodes.push({
-        id: 'site-1',
-        label: siteInfo.name || 'Physical Facility',
-        type: 'Site',
-        description: `Surveyed facility located at: ${siteInfo.address || 'unspecified coordinates'}`
-      });
-
-      rooms.forEach((r, idx) => {
-        const rId = `room-${r.id}`;
-        baseNodes.push({
-          id: rId,
-          label: r.roomName || `Room ${idx + 1}`,
-          type: 'Room',
-          description: `Surveyed floor space: ${r.roomName}. Comments: ${r.comments || 'No comment recorded.'}`
-        });
-        baseEdges.push({
-          id: `edge-site-room-${idx}`,
-          source: 'site-1',
-          target: rId,
-          type: 'CONTAINS',
-          description: 'Facility contains this room space'
-        });
-
-        if (r.assets) {
-          r.assets.forEach((a) => {
-            const assetId = `asset-${a.id}`;
-            baseNodes.push({
-              id: assetId,
-              label: a.name,
-              type: 'Asset',
-              description: `${a.category} equipment rated in "${a.condition}" condition. Risk: ${a.riskRating || 'Medium'}. RUL: ${a.rul || 'Unknown'}`
-            });
-            baseEdges.push({
-              id: `edge-room-asset-${a.id}`,
-              source: rId,
-              target: assetId,
-              type: 'HAS_ASSET',
-              description: 'Asset installed in this space'
-            });
-
-            // Category group system
-            const systemId = `system-${a.category.toLowerCase().replace(/\s+/g, '-')}`;
-            const exists = baseNodes.some(n => n.id === systemId);
-            if (!exists) {
-              baseNodes.push({
-                id: systemId,
-                label: `${a.category} System`,
-                type: 'System',
-                description: `Infrastructure system organizing all ${a.category} assets.`
-              });
-              baseEdges.push({
-                id: `edge-site-system-${systemId}`,
-                source: 'site-1',
-                target: systemId,
-                type: 'MONITORS',
-                description: 'Facility monitors this infrastructure system'
-              });
-            }
-
-            baseEdges.push({
-              id: `edge-asset-system-${a.id}`,
-              source: assetId,
-              target: systemId,
-              type: 'BELONGS_TO',
-              description: 'Equipment belongs to this system'
-            });
-          });
-        }
-      });
-
-      // Include work orders if any exist
-      if (osState.workOrders && osState.workOrders.length > 0) {
-        osState.workOrders.forEach((wo, idx) => {
-          const woId = `wo-${wo.id}`;
-          baseNodes.push({
-            id: woId,
-            label: `Ticket ${wo.ticketNo}`,
-            type: 'WorkOrder',
-            description: `[${wo.maintenanceType}] ${wo.description}. Status: ${wo.status}. Cost: $${wo.cost}`
-          });
-
-          // Link to room
-          const matchedRoom = rooms.find(r => r.roomName.toLowerCase() === wo.roomName.toLowerCase());
-          if (matchedRoom) {
-            baseEdges.push({
-              id: `edge-wo-room-${idx}`,
-              source: woId,
-              target: `room-${matchedRoom.id}`,
-              type: 'AFFECTS',
-              description: 'Work order occurs in this space'
-            });
-          }
-
-          // Link to asset
-          if (wo.assetId) {
-            baseEdges.push({
-              id: `edge-wo-asset-${idx}`,
-              source: woId,
-              target: `asset-${wo.assetId}`,
-              type: 'MAINTAINED_BY',
-              description: 'Work order acts on this asset'
-            });
-          }
-        });
-      }
-
-      graph = { nodes: baseNodes, edges: baseEdges };
+    // If not manually cognified or empty, deterministically compile from multi-modal domain state
+    if (!rawGraph || !rawGraph.nodes || rawGraph.nodes.length === 0) {
+      graph = compileFacilityKnowledgeGraph(
+        siteInfo,
+        rooms,
+        osState.workOrders || [],
+        osState.asBuiltDrawings || []
+      );
+    } else {
+      graph = rawGraph;
     }
 
     return {
       ...graph,
       nodes: computeGraphLayout(graph.nodes, graph.edges)
     };
-  }, [osState.cogneeGraph, rooms, osState.workOrders, siteInfo.name, siteInfo.address]);
+  }, [osState.cogneeGraph, rooms, osState.workOrders, osState.asBuiltDrawings, siteInfo]);
+
+  // Dynamic Domino / Cascade Risk Propagation calculation directly on Graph topology
+  const cascadeRiskResults: GraphCascadeRiskResult[] = useMemo(() => {
+    return analyzeGraphRiskPropagation(computedGraph, rooms);
+  }, [computedGraph, rooms]);
 
   const handleAsBuiltUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -386,57 +290,72 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
     
     try {
       const reader = new FileReader();
-      reader.readAsDataURL(file);
       reader.onload = async () => {
-        const dataUrl = reader.result as string;
-        
-        // Call Gemini Service to analyze drawing
-        const analysis = await analyzeAsBuiltDrawing(dataUrl, file.type, dwgDiscipline);
-        
-        const newDwg: AsBuiltDrawing = {
-          id: crypto.randomUUID(),
-          name: file.name,
-          drawingNo: dwgNo || 'DWG-' + Math.floor(1000 + Math.random() * 9000),
-          revision: dwgRev || '0',
-          discipline: dwgDiscipline,
-          areaFloor: dwgArea || 'All Areas',
-          summary: analysis.summary,
-          dateAdded: Date.now(),
-          dataUrl,
-          detectedEquipment: analysis.detectedEquipment
-        };
+        try {
+          const dataUrl = reader.result as string;
+          
+          // Call Gemini Service to analyze drawing
+          const analysis = await analyzeAsBuiltDrawing(dataUrl, file.type, dwgDiscipline);
+          
+          const newDwg: AsBuiltDrawing = {
+            id: crypto.randomUUID(),
+            name: file.name,
+            drawingNo: dwgNo || 'DWG-' + Math.floor(1000 + Math.random() * 9000),
+            revision: dwgRev || '0',
+            discipline: dwgDiscipline,
+            areaFloor: dwgArea || 'All Areas',
+            summary: analysis.summary,
+            dateAdded: Date.now(),
+            dataUrl,
+            detectedEquipment: analysis.detectedEquipment
+          };
 
-        const updatedDrawings = [newDwg, ...(osState.asBuiltDrawings || [])];
-        
-        // Also seed a memory inside the Second Brain that this drawing was parsed!
-        const drawingMemoryText = `As-built blueprint "${newDwg.drawingNo}" (Discipline: ${newDwg.discipline}, Rev: ${newDwg.revision}) successfully loaded. Identified key components: ${analysis.detectedEquipment.join(', ')}.`;
-        const updatedMemories: AgentMemoryItem[] = [{
-          id: crypto.randomUUID(),
-          category: 'site_fact',
-          text: drawingMemoryText,
-          timestamp: Date.now()
-        }, ...osState.memories];
+          const updatedDrawings = [newDwg, ...(osState.asBuiltDrawings || [])];
+          
+          // Also seed a memory inside the Second Brain that this drawing was parsed!
+          const drawingMemoryText = `As-built blueprint "${newDwg.drawingNo}" (Discipline: ${newDwg.discipline}, Rev: ${newDwg.revision}) successfully loaded. Identified key components: ${analysis.detectedEquipment.join(', ')}.`;
+          const updatedMemories: AgentMemoryItem[] = [{
+            id: crypto.randomUUID(),
+            category: 'site_fact',
+            text: drawingMemoryText,
+            timestamp: Date.now()
+          }, ...osState.memories];
 
-        const updatedOS = {
-          ...osState,
-          asBuiltDrawings: updatedDrawings,
-          memories: updatedMemories
-        };
-        
-        updateOSState(updatedOS);
-        
-        // Reset inputs
-        setDwgNo('');
-        setDwgRev('A');
-        setDwgArea('');
-        setSelectedDwg(newDwg);
+          const updatedOS = {
+            ...osState,
+            asBuiltDrawings: updatedDrawings,
+            memories: updatedMemories
+          };
+          
+          updateOSState(updatedOS);
+          
+          // Reset inputs
+          setDwgNo('');
+          setDwgRev('A');
+          setDwgArea('');
+          setSelectedDwg(newDwg);
+        } catch (innerErr) {
+          console.error("Error analyzing drawing:", innerErr);
+          alert("Failed to analyze drawing file. Please try again.");
+        } finally {
+          setDwgExtracting(false);
+          setIsUploadingDwg(false);
+        }
+      };
+      reader.onerror = () => {
+        alert("Failed to read drawing file.");
         setDwgExtracting(false);
         setIsUploadingDwg(false);
       };
+      reader.readAsDataURL(file);
     } catch (err) {
       console.error(err);
       setDwgExtracting(false);
       setIsUploadingDwg(false);
+    } finally {
+      if (e.target) {
+        e.target.value = '';
+      }
     }
   };
 
@@ -445,11 +364,18 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
     if (!file) return;
     setIsUploadingVision(true);
     const reader = new FileReader();
-    reader.readAsDataURL(file);
     reader.onload = () => {
       setVisionFileUrl(reader.result as string);
       setIsUploadingVision(false);
     };
+    reader.onerror = () => {
+      alert("Failed to read image file.");
+      setIsUploadingVision(false);
+    };
+    reader.readAsDataURL(file);
+    if (e.target) {
+      e.target.value = '';
+    }
   };
 
   const handleAddVisionCapture = () => {
@@ -778,29 +704,42 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
 
     try {
       const reader = new FileReader();
-      reader.readAsDataURL(file);
       reader.onload = async () => {
-        const dataUrl = reader.result as string;
-        
-        // Save to site documents
-        const newDoc = {
-          id: crypto.randomUUID(),
-          name: file.name,
-          summary: `Direct PM upload for condition auto-tuning.`,
-          dateAdded: Date.now(),
-          dataUrl,
-          mimeType: file.type
-        };
-        
-        const updatedDocs = [...(siteInfo.documents || []), newDoc];
-        onUpdateSiteInfo('documents', updatedDocs);
-        setSelectedDocId(newDoc.id);
+        try {
+          const dataUrl = reader.result as string;
+          
+          // Save to site documents
+          const newDoc = {
+            id: crypto.randomUUID(),
+            name: file.name,
+            summary: `Direct PM upload for condition auto-tuning.`,
+            dateAdded: Date.now(),
+            dataUrl,
+            mimeType: file.type
+          };
+          
+          const updatedDocs = [...(siteInfo.documents || []), newDoc];
+          onUpdateSiteInfo('documents', updatedDocs);
+          setSelectedDocId(newDoc.id);
 
-        await runPMReportAnalysis(dataUrl, file.type, file.name);
+          await runPMReportAnalysis(dataUrl, file.type, file.name);
+        } catch (innerErr) {
+          console.error("Error analyzing PM report:", innerErr);
+          alert("Failed to analyze PM report file.");
+        }
       };
+      reader.onerror = () => {
+        alert("Failed to read PM report file.");
+        setIsAnalyzingPM(false);
+      };
+      reader.readAsDataURL(file);
     } catch (err) {
       console.error(err);
       setIsAnalyzingPM(false);
+    } finally {
+      if (e.target) {
+        e.target.value = '';
+      }
     }
   };
 
@@ -942,15 +881,24 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
 
     let currentGraph = osState.cogneeGraph;
     if (!currentGraph || !currentGraph.nodes || currentGraph.nodes.length === 0) {
-      currentGraph = await cognifyDataSources([], rooms, osState.workOrders || [], osState.memories || []);
+      currentGraph = computedGraph;
     }
 
     try {
-      const response = await queryCogneeGraph(cogneeSearchQuery, currentGraph);
-      setGraphQueryResponse(response);
-      
-      if (response.traversedNodes && response.traversedNodes.length > 0) {
-        setSelectedNodeId(response.traversedNodes[0]);
+      try {
+        const response = await queryCogneeGraph(cogneeSearchQuery, currentGraph);
+        setGraphQueryResponse(response);
+        
+        if (response.traversedNodes && response.traversedNodes.length > 0) {
+          setSelectedNodeId(response.traversedNodes[0]);
+        }
+      } catch (geminiError) {
+        console.warn("AI graph query fallback to deterministic engine:", geminiError);
+        const deterministicResponse = queryKnowledgeGraph(currentGraph, cogneeSearchQuery);
+        setGraphQueryResponse(deterministicResponse);
+        if (deterministicResponse.traversedNodes && deterministicResponse.traversedNodes.length > 0) {
+          setSelectedNodeId(deterministicResponse.traversedNodes[0]);
+        }
       }
     } catch (error) {
       console.error("Semantic query failed:", error);
@@ -1397,22 +1345,19 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
           <div className="flex flex-col gap-2">
             <span className="text-xs font-bold text-gray-700">Upload New PM Report / Service Sheet</span>
             <div className="flex gap-2">
-              <input
-                type="file"
-                ref={fileInputRef}
-                onChange={handlePMDirectUpload}
-                accept="image/*,application/pdf"
-                className="hidden"
-              />
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={isAnalyzingPM}
-                className="flex-1 bg-white border border-gray-200 hover:border-indigo-400 hover:bg-indigo-50/20 text-gray-600 rounded-xl px-4 py-2 text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer transition border-dashed"
+              <div
+                className="relative overflow-hidden flex-1 bg-white border border-gray-200 hover:border-indigo-400 hover:bg-indigo-50/20 text-gray-600 rounded-xl px-4 py-2 text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer transition border-dashed"
               >
+                <input
+                  type="file"
+                  onChange={handlePMDirectUpload}
+                  accept="image/*,application/pdf"
+                  disabled={isAnalyzingPM}
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                />
                 <Upload className="w-4 h-4 text-indigo-500" />
                 Select & Process PDF / Image
-              </button>
+              </div>
             </div>
           </div>
         </div>
@@ -1745,17 +1690,17 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
 
                   {/* Uploader File Input */}
                   <div className="mt-2 flex items-center justify-between border-t border-gray-200/60 pt-3">
-                    <label className="flex items-center gap-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 hover:text-indigo-800 border border-indigo-200 rounded-xl px-4 py-2 text-xs font-bold transition cursor-pointer shadow-sm">
-                      <Upload className="w-4 h-4" />
-                      Select drawing image
+                    <div className="relative overflow-hidden flex items-center gap-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 hover:text-indigo-800 border border-indigo-200 rounded-xl px-4 py-2 text-xs font-bold transition cursor-pointer shadow-sm">
                       <input 
                         type="file" 
                         accept="image/*" 
                         onChange={handleAsBuiltUpload} 
-                        className="hidden" 
+                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" 
                         disabled={dwgExtracting}
                       />
-                    </label>
+                      <Upload className="w-4 h-4" />
+                      Select drawing image
+                    </div>
 
                     {dwgExtracting && (
                       <span className="text-[11px] font-medium text-indigo-600 animate-pulse flex items-center gap-1.5 font-mono">
@@ -1913,16 +1858,16 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
                   {/* Snapshot Selector */}
                   <div className="mt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-t border-gray-200/60 pt-3">
                     <div className="flex items-center gap-3">
-                      <label className="flex items-center gap-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 hover:text-indigo-800 border border-indigo-200 rounded-xl px-4 py-2 text-xs font-bold transition cursor-pointer shadow-sm">
-                        <Camera className="w-4 h-4" />
-                        Select asset snapshot
+                      <div className="relative overflow-hidden flex items-center gap-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 hover:text-indigo-800 border border-indigo-200 rounded-xl px-4 py-2 text-xs font-bold transition cursor-pointer shadow-sm">
                         <input 
                           type="file" 
                           accept="image/*" 
                           onChange={handleVisionFileChange} 
-                          className="hidden" 
+                          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" 
                         />
-                      </label>
+                        <Camera className="w-4 h-4" />
+                        Select asset snapshot
+                      </div>
                       {isUploadingVision && (
                         <span className="text-xs text-indigo-500 animate-pulse font-mono">Uploading...</span>
                       )}
@@ -2730,6 +2675,87 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
                       )}
                     </div>
                   </div>
+                </div>
+
+                {/* Karpathy "Delete Everything, Keep Graph" & Domino Cascade Risk Banner */}
+                <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white rounded-2xl p-5 border border-indigo-500/30 shadow-xl flex flex-col gap-4">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-indigo-500/20 pb-4">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2.5 bg-indigo-500/20 rounded-xl border border-indigo-400/30 text-indigo-300">
+                        <Network className="w-5 h-5 animate-pulse" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h4 className="text-sm font-extrabold text-white tracking-wide">
+                            Karpathy Graph Compiler: Multi-Hop Cascade Risk Engine
+                          </h4>
+                          <span className="bg-emerald-500/20 text-emerald-300 text-[9px] font-bold px-2 py-0.5 rounded-full border border-emerald-400/30 font-mono">
+                            Deterministic Fidelity
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-300 mt-0.5">
+                          Compiles all photos, work orders, and floor zones into a causal network map. Evaluates domino failure paths across connected infrastructure.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-[11px] font-mono text-indigo-300 bg-indigo-900/60 px-3 py-1.5 rounded-xl border border-indigo-700/50">
+                        <b>{computedGraph.nodes.length}</b> Nodes &bull; <b>{computedGraph.edges.length}</b> Edges
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Cascade Risk Alerts */}
+                  {cascadeRiskResults.length > 0 ? (
+                    <div className="space-y-2.5">
+                      <div className="text-[10px] font-mono uppercase text-indigo-300 tracking-wider flex items-center justify-between">
+                        <span>⚠️ Active Multi-Hop Risk Cascades ({cascadeRiskResults.length} systemic threats detected)</span>
+                        <span className="text-slate-400">Topology-driven domino analysis</span>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                        {cascadeRiskResults.slice(0, 6).map((cascade) => (
+                          <div
+                            key={cascade.assetId}
+                            onClick={() => setSelectedNodeId(`asset-${cascade.assetId}`)}
+                            className="bg-slate-900/90 hover:bg-slate-800/90 border border-slate-700/60 hover:border-amber-400/60 rounded-xl p-3 cursor-pointer transition flex flex-col justify-between gap-2 shadow-lg group"
+                          >
+                            <div>
+                              <div className="flex items-start justify-between gap-2">
+                                <span className="text-xs font-bold text-white group-hover:text-amber-300 transition truncate">
+                                  {cascade.assetName}
+                                </span>
+                                <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded shrink-0 ${
+                                  cascade.originalRisk === 'Extreme'
+                                    ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                                    : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                                }`}>
+                                  Impact Score: {cascade.impactScore}%
+                                </span>
+                              </div>
+
+                              <p className="text-[11px] text-slate-300 mt-1.5 line-clamp-2">
+                                {cascade.criticalWarning || `Potential outage cascade affecting ${cascade.affectedRooms.join(', ') || 'adjacent zones'}.`}
+                              </p>
+                            </div>
+
+                            <div className="border-t border-slate-800 pt-2 flex items-center justify-between text-[10px] text-slate-400 font-mono">
+                              <span>Impacts: <b className="text-slate-200">{cascade.affectedRooms.length} room(s)</b></span>
+                              <span className="text-indigo-400 font-bold group-hover:translate-x-0.5 transition flex items-center gap-1">
+                                View in Graph ➔
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-3 text-xs text-slate-400 flex items-center gap-2">
+                      <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <span>No extreme cascade hazards found. All equipment operational dependencies are stabilized.</span>
+                    </div>
+                  )}
                 </div>
 
                 {/* Bottom section: Semantic Graph grounded RAG Search */}

@@ -69,6 +69,7 @@ export const ArchitecturalReconstruction: React.FC<ArchitecturalReconstructionPr
   const [hoverGridPos, setHoverGridPos] = useState<{ x: number; y: number } | null>(null);
   const [statusMessage, setStatusMessage] = useState<string>('Select an action or draw tool to begin engineering.');
   const [analyzingImage, setAnalyzingImage] = useState(false);
+  const reconFileInputRef = useRef<HTMLInputElement>(null);
 
   // Synchronize state when siteInfo loads
   useEffect(() => {
@@ -624,11 +625,21 @@ export const ArchitecturalReconstruction: React.FC<ArchitecturalReconstructionPr
                 </div>
 
                 <div className="mt-4 flex flex-col sm:flex-row items-center gap-3">
-                  <label className="bg-slate-900 border border-slate-800 hover:bg-slate-850 text-slate-300 font-bold py-2.5 px-4 rounded-xl text-xs cursor-pointer flex items-center gap-1.5 w-full sm:w-auto text-center justify-center">
-                    <span className="material-icons text-sm">photo_camera</span>
+                  <button 
+                    type="button"
+                    onClick={() => reconFileInputRef.current?.click()}
+                    className="relative overflow-hidden bg-slate-900 border border-slate-800 hover:bg-slate-800 text-slate-300 font-bold py-2.5 px-4 rounded-xl text-xs cursor-pointer flex items-center gap-1.5 w-full sm:w-auto text-center justify-center"
+                  >
+                    <span className="material-icons text-sm pointer-events-none">photo_camera</span>
                     Upload Photo or Drawing Sketch
-                    <input type="file" className="hidden" accept="image/*" onChange={handleImageUpload} />
-                  </label>
+                  </button>
+                  <input 
+                    type="file" 
+                    ref={reconFileInputRef}
+                    className="hidden" 
+                    accept="image/*" 
+                    onChange={handleImageUpload} 
+                  />
 
                   {recon.uploadedLayoutImage && (
                     <button 

@@ -4,6 +4,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { SiteInfo, Room, AppState, Asset, ChatMessage, AuditEntry } from './types';
 import { firebaseService } from './services/firebaseService';
 import { detectAssetsWithBoundingBoxes, cropImage, summarizeConversation, analyzeDocument, extractAssetsFromVendorRegister } from './services/geminiService';
+import { usePresenceSession } from './hooks/usePresenceSession';
 import { ChatBot } from './components/ChatBot';
 import { ArchitecturalReconstruction } from './components/ArchitecturalReconstruction';
 import { WelcomeView } from './components/WelcomeView';
@@ -80,99 +81,28 @@ function App() {
       return profile;
   });
 
-  const [activePresences, setActivePresences] = useState<any[]>([]);
-  const [hasEditLock, setHasEditLock] = useState<boolean>(true);
   const [showProfileModal, setShowProfileModal] = useState<boolean>(false);
-  const [isEditingPresence, setIsEditingPresence] = useState<boolean>(true); // user starts with edit intent
 
   const currentInspectionId = useMemo(() => {
       if (!appState.siteInfo.name) return '';
       return appState.siteInfo.name.trim().replace(/\s+/g, '_').toLowerCase();
   }, [appState.siteInfo.name]);
 
-  const getAvatarColor = (str: string) => {
-      let hash = 0;
-      for (let i = 0; i < str.length; i++) {
-          hash = str.charCodeAt(i) + ((hash << 5) - hash);
-      }
-      const colors = [
-          'bg-pink-500 text-white',
-          'bg-purple-500 text-white',
-          'bg-blue-500 text-white',
-          'bg-indigo-500 text-white',
-          'bg-teal-500 text-white',
-          'bg-emerald-500 text-white',
-          'bg-amber-500 text-white',
-          'bg-rose-500 text-white'
-      ];
-      const index = Math.abs(hash) % colors.length;
-      return colors[index];
-  };
-
-  const getInitials = (name: string, email: string) => {
-      const text = name || email || 'Inspector';
-      if (text.includes('@')) {
-          return text.substring(0, 2).toUpperCase();
-      }
-      const parts = text.split(' ');
-      if (parts.length >= 2) {
-          return (parts[0][0] + parts[1][0]).toUpperCase();
-      }
-      return text.substring(0, 2).toUpperCase();
-  };
-
-  useEffect(() => {
-      if (!effectiveIsOnline || !currentInspectionId || viewMode !== 'single' || appState.view === 'welcome') {
-          setActivePresences([]);
-          setHasEditLock(true);
-          return;
-      }
-
-      // 1. Immediately publish initial presence
-      firebaseService.updatePresence(currentInspectionId, inspectorProfile.userId, inspectorProfile.email, isEditingPresence);
-
-      // 2. Set up heartbeat timer (every 5 seconds)
-      const heartbeat = setInterval(() => {
-          firebaseService.updatePresence(currentInspectionId, inspectorProfile.userId, inspectorProfile.email, isEditingPresence);
-      }, 5000);
-
-      // 3. Listen to all presences on this site
-      const unsubscribe = firebaseService.listenToPresence(currentInspectionId, (presences) => {
-          const now = Date.now();
-          // Filter out stale presences (> 15 seconds) and our own presence
-          const activeOthers = presences.filter(p => {
-              if (p.userId === inspectorProfile.userId) return false;
-              const lastActiveTime = p.lastActive ? new Date(p.lastActive).getTime() : 0;
-              return (now - lastActiveTime) < 15000;
-          });
-          setActivePresences(activeOthers);
-
-          // 4. Resolve edit lock conflicts
-          const otherEditors = activeOthers.filter(p => p.isEditing);
-          if (otherEditors.length > 0) {
-              if (isEditingPresence) {
-                  // We see someone else editing, and we are also marked as editing.
-                  // By default, let's gracefully downgrade our active state to viewing (isEditingPresence = false)
-                  // and alert the user that they have been placed in read-only mode because someone else is editing!
-                  setIsEditingPresence(false);
-                  setHasEditLock(false);
-              } else {
-                  // If we are already in viewing mode, we do not have the edit lock.
-                  setHasEditLock(false);
-              }
-          } else {
-              // No other active editors! We can safely have/keep the edit lock.
-              setHasEditLock(true);
-          }
-      });
-
-      // Cleanup on unmount or site change
-      return () => {
-          clearInterval(heartbeat);
-          unsubscribe();
-          firebaseService.removePresence(currentInspectionId, inspectorProfile.userId);
-      };
-  }, [effectiveIsOnline, currentInspectionId, viewMode, appState.view, inspectorProfile, isEditingPresence]);
+  const {
+      activePresences,
+      hasEditLock,
+      setHasEditLock,
+      isEditingPresence,
+      setIsEditingPresence,
+      getAvatarColor,
+      getInitials,
+  } = usePresenceSession({
+      currentInspectionId,
+      effectiveIsOnline,
+      viewMode,
+      appView: appState.view,
+      inspectorProfile,
+  });
 
   useEffect(() => {
     const handleOnline = () => setIsOnline(true);
@@ -401,46 +331,67 @@ function App() {
   };
 
   const handleDocumentUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-      if (!hasEditLock) return;
       const file = e.target.files?.[0];
       if (!file) return;
+
+      if (!hasEditLock) {
+          alert("Edit Lock Required: You currently do not have edit control for this session.");
+          e.target.value = '';
+          return;
+      }
 
       setProcessing(true);
       setLoadingText(`Analyzing ${file.name}...`);
 
       try {
           const reader = new FileReader();
-          reader.readAsDataURL(file);
           reader.onload = async () => {
-              const dataUrl = reader.result as string;
-              
-              if (file.type.startsWith('image/') || file.type === 'application/pdf') {
-                  const summary = await analyzeDocument(dataUrl, file.type, file.name);
-                  
-                  const newDoc = {
-                      id: crypto.randomUUID(),
-                      name: file.name,
-                      summary,
-                      dateAdded: Date.now(),
-                      dataUrl,
-                      mimeType: file.type
-                  };
-                  
-                  setAppState(prev => ({
-                      ...prev,
-                      siteInfo: {
-                          ...prev.siteInfo,
-                          documents: [...(prev.siteInfo.documents || []), newDoc]
-                      }
-                  }));
-              } else {
-                  alert("Unsupported file type. Please upload PDF or image.");
+              try {
+                  const dataUrl = reader.result as string;
+                  if (file.type.startsWith('image/') || file.type === 'application/pdf') {
+                      const summary = await analyzeDocument(dataUrl, file.type, file.name);
+                      
+                      const newDoc = {
+                          id: crypto.randomUUID(),
+                          name: file.name,
+                          summary,
+                          dateAdded: Date.now(),
+                          dataUrl,
+                          mimeType: file.type
+                      };
+                      
+                      setAppState(prev => ({
+                          ...prev,
+                          siteInfo: {
+                              ...prev.siteInfo,
+                              documents: [...(prev.siteInfo.documents || []), newDoc]
+                          }
+                      }));
+                  } else {
+                      alert("Unsupported file type. Please upload PDF or image.");
+                  }
+              } catch (innerErr) {
+                  console.error("Document analysis error:", innerErr);
+                  alert("Error analyzing document. Please try again.");
+              } finally {
+                  setProcessing(false);
+                  setLoadingText('');
               }
-              setProcessing(false);
           };
+          reader.onerror = () => {
+              alert("Failed to read file.");
+              setProcessing(false);
+              setLoadingText('');
+          };
+          reader.readAsDataURL(file);
       } catch (err) {
           console.error(err);
           setProcessing(false);
+          setLoadingText('');
+      } finally {
+          if (e.target) {
+              e.target.value = '';
+          }
       }
   };
 
@@ -448,71 +399,93 @@ function App() {
       const file = e.target.files?.[0];
       if (!file) return;
 
+      if (!hasEditLock) {
+          alert("Edit Lock Required: You currently do not have edit control for this session.");
+          e.target.value = '';
+          return;
+      }
+
       setProcessing(true);
       setLoadingText(`Extracting assets from ${file.name}...`);
 
       try {
           const reader = new FileReader();
-          reader.readAsDataURL(file);
           reader.onload = async () => {
-              const dataUrl = reader.result as string;
-              
-              const groupedAssets = await extractAssetsFromVendorRegister(dataUrl, file.type, file.name);
-              
-              if (groupedAssets.length > 0) {
-                  let newRooms = appState.rooms.map(r => ({...r, assets: [...r.assets]}));
+              try {
+                  const dataUrl = reader.result as string;
+                  const groupedAssets = await extractAssetsFromVendorRegister(dataUrl, file.type, file.name);
                   
-                  groupedAssets.forEach(group => {
-                      let roomIndex = newRooms.findIndex(r => r.roomName.toLowerCase() === group.roomName.toLowerCase());
-                      if (roomIndex === -1) {
-                          newRooms.push({
-                              ...INITIAL_ROOM_STATE,
+                  if (groupedAssets.length > 0) {
+                      let newRooms = appState.rooms.map(r => ({...r, assets: [...r.assets]}));
+                      
+                      groupedAssets.forEach(group => {
+                          let roomIndex = newRooms.findIndex(r => r.roomName.toLowerCase() === group.roomName.toLowerCase());
+                          if (roomIndex === -1) {
+                              newRooms.push({
+                                  ...INITIAL_ROOM_STATE,
+                                  id: crypto.randomUUID(),
+                                  roomName: group.roomName,
+                                  buildingName: appState.siteInfo.name || 'Building',
+                                  assets: []
+                              });
+                              roomIndex = newRooms.length - 1;
+                          }
+                          
+                          const mappedAssets: Asset[] = group.assets.map(a => ({
                               id: crypto.randomUUID(),
-                              roomName: group.roomName,
-                              buildingName: appState.siteInfo.name || 'Building',
-                              assets: []
-                          });
-                          roomIndex = newRooms.length - 1;
-                      }
+                              name: a.description?.substring(0, 30) || 'Unknown Asset',
+                              category: a.category || 'Other',
+                              description: a.description || 'Unknown Asset',
+                              condition: a.condition || 'Unknown',
+                              riskRating: a.riskRating || 'Low',
+                              auditTrail: [],
+                              justification: a.justification || 'Imported from vendor register',
+                              quantity: a.quantity || 1,
+                              cost: a.cost || '0',
+                              age: a.age || 'Unknown',
+                              rul: a.rul || 'Unknown',
+                              verified: true,
+                              aiDetected: true
+                          }));
+                          
+                          newRooms[roomIndex].assets.push(...mappedAssets);
+                      });
                       
-                      const mappedAssets: Asset[] = group.assets.map(a => ({
-                          id: crypto.randomUUID(),
-                          name: a.description?.substring(0, 30) || 'Unknown Asset',
-                          category: a.category || 'Other',
-                          description: a.description || 'Unknown Asset',
-                          condition: a.condition || 'Unknown',
-                          riskRating: a.riskRating || 'Low',
-                          auditTrail: [],
-                          justification: a.justification || 'Imported from vendor register',
-                          quantity: a.quantity || 1,
-                          cost: a.cost || '0',
-                          age: a.age || 'Unknown',
-                          rul: a.rul || 'Unknown',
-                          verified: true, // Auto-verify imported data or leave unverified? Let's say verified:false so user must check
-                          aiDetected: true
+                      setAppState(prev => ({
+                          ...prev,
+                          rooms: newRooms,
+                          siteInfo: {
+                              ...prev.siteInfo,
+                              numRooms: newRooms.length
+                          }
                       }));
-                      
-                      newRooms[roomIndex].assets.push(...mappedAssets);
-                  });
-                  
-                  setAppState(prev => ({
-                      ...prev,
-                      rooms: newRooms,
-                      siteInfo: {
-                          ...prev.siteInfo,
-                          numRooms: newRooms.length
-                      }
-                  }));
-                  alert(`Successfully imported ${groupedAssets.reduce((acc, g) => acc + g.assets.length, 0)} assets across ${groupedAssets.length} areas.`);
-              } else {
-                  alert("Could not extract any assets from this file. Ensure it is a valid format.");
+                      alert(`Successfully imported ${groupedAssets.reduce((acc, g) => acc + g.assets.length, 0)} assets across ${groupedAssets.length} areas.`);
+                  } else {
+                      alert("Could not extract any assets from this file. Ensure it is a valid format.");
+                  }
+              } catch (innerErr) {
+                  console.error("Vendor register extraction error:", innerErr);
+                  alert("Failed to parse vendor register file.");
+              } finally {
+                  setProcessing(false);
+                  setLoadingText('');
               }
-              setProcessing(false);
           };
+          reader.onerror = () => {
+              alert("Failed to read vendor file.");
+              setProcessing(false);
+              setLoadingText('');
+          };
+          reader.readAsDataURL(file);
       } catch (err) {
           console.error(err);
           setProcessing(false);
+          setLoadingText('');
           alert("Failed to parse the file.");
+      } finally {
+          if (e.target) {
+              e.target.value = '';
+          }
       }
   };
 
@@ -759,32 +732,115 @@ function App() {
   };
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!hasEditLock) return;
-    if (!e.target.files) return;
-    const files: File[] = Array.from(e.target.files);
-    
-    const currentRoom = appState.rooms[appState.currentRoomIndex];
-    if (currentRoom.images.length + files.length > 5) {
-        alert("Max 5 images per room.");
-        return;
+    if (!e.target.files || e.target.files.length === 0) return;
+
+    // Automatically ensure edit intent so lock check never blocks single users
+    if (!hasEditLock) {
+      setHasEditLock(true);
+      setIsEditingPresence(true);
     }
 
-    const newImages = await Promise.all(files.map(file => {
-      return new Promise<{id: string, dataUrl: string, name: string, timestamp: number}>((resolve) => {
-        const reader = new FileReader();
-        reader.onload = (event) => {
-          resolve({
-            id: crypto.randomUUID(),
-            dataUrl: event.target?.result as string,
-            name: file.name,
-            timestamp: Date.now()
-          });
-        };
-        reader.readAsDataURL(file);
-      });
-    }));
+    const files: File[] = Array.from(e.target.files);
+    const currentRoom = appState.rooms[appState.currentRoomIndex];
 
-    updateCurrentRoom({ images: [...currentRoom.images, ...newImages] });
+    if (!currentRoom) {
+      alert("No active room selected.");
+      if (e.target) e.target.value = '';
+      return;
+    }
+
+    const MAX_IMAGES = 10;
+    if (currentRoom.images.length + files.length > MAX_IMAGES) {
+      alert(`Maximum ${MAX_IMAGES} images allowed per room. You currently have ${currentRoom.images.length} image(s). Please remove some existing photos or select fewer files.`);
+      if (e.target) e.target.value = '';
+      return;
+    }
+
+    setProcessing(true);
+    setLoadingText('Processing & optimizing uploaded photo(s)...');
+
+    try {
+      const newImages = await Promise.all(
+        files.map(file => {
+          return new Promise<{ id: string; dataUrl: string; name: string; timestamp: number }>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onerror = () => reject(new Error(`Failed to read file ${file.name}`));
+            reader.onload = (event) => {
+              const result = event.target?.result as string;
+              if (!result) {
+                reject(new Error("Empty image file payload"));
+                return;
+              }
+
+              // Compress & downscale large photos for high speed and minimal RAM usage
+              const img = new Image();
+              img.onerror = () => {
+                // If canvas decoding fails, fallback to raw data URL
+                resolve({
+                  id: crypto.randomUUID(),
+                  dataUrl: result,
+                  name: file.name,
+                  timestamp: Date.now()
+                });
+              };
+              img.onload = () => {
+                const MAX_DIM = 1600;
+                let width = img.width;
+                let height = img.height;
+
+                if (width > MAX_DIM || height > MAX_DIM) {
+                  if (width > height) {
+                    height = Math.round((height * MAX_DIM) / width);
+                    width = MAX_DIM;
+                  } else {
+                    width = Math.round((width * MAX_DIM) / height);
+                    height = MAX_DIM;
+                  }
+                }
+
+                const canvas = document.createElement('canvas');
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d');
+
+                if (!ctx) {
+                  resolve({
+                    id: crypto.randomUUID(),
+                    dataUrl: result,
+                    name: file.name,
+                    timestamp: Date.now()
+                  });
+                  return;
+                }
+
+                ctx.drawImage(img, 0, 0, width, height);
+                const compressed = canvas.toDataURL('image/jpeg', 0.85);
+                resolve({
+                  id: crypto.randomUUID(),
+                  dataUrl: compressed,
+                  name: file.name,
+                  timestamp: Date.now()
+                });
+              };
+              img.src = result;
+            };
+            reader.readAsDataURL(file);
+          });
+        })
+      );
+
+      const updatedImages = [...currentRoom.images, ...newImages];
+      updateCurrentRoom({ images: updatedImages });
+    } catch (err) {
+      console.error("Error reading photo upload:", err);
+      alert("Failed to process selected image(s). Please ensure they are valid image files (JPG, PNG, WEBP, GIF).");
+    } finally {
+      setProcessing(false);
+      setLoadingText('');
+      if (e.target) {
+        e.target.value = '';
+      }
+    }
   };
 
   const generateAssetsWithAI = async () => {
@@ -1794,448 +1850,6 @@ function App() {
                   currentInspectionId={currentInspectionId}
                   inspectorProfile={inspectorProfile}
               />
-          ) : false ? (
-              <div className="flex-1 p-4 animate-fade-in flex flex-col gap-6">
-                  
-                  {/* Realtime Connection Sync Queue Monitor Bar */}
-                  {pendingQueueCount > 0 && (
-                      <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3 animate-pulse shadow-sm">
-                          <div className="flex items-center gap-3">
-                              <div className="bg-amber-100 text-amber-800 p-2 rounded-full flex items-center justify-center">
-                                  <span className="material-icons text-xl">cloud_queue</span>
-                              </div>
-                              <div>
-                                  <h4 className="font-bold text-sm text-gray-900">Offline Queue: {pendingQueueCount} Pending Items</h4>
-                                  <p className="text-xs text-gray-600">
-                                      {syncMessage || 'Awaiting connection restoration to push latest changes to Firestore.'}
-                                  </p>
-                              </div>
-                          </div>
-                          {effectiveIsOnline && (
-                              <button 
-                                  onClick={async () => {
-                                      setSyncingOfflineData(true);
-                                      setSyncMessage('Manual push triggered...');
-                                      const synced = await firebaseService.syncPendingQueue((p) => setSyncMessage(p));
-                                      const remaining = await firebaseService.getPendingQueueCount();
-                                      setPendingQueueCount(remaining);
-                                      const fresh = await firebaseService.getAllInspections();
-                                      setPortfolioData(fresh);
-                                      setSyncingOfflineData(false);
-                                      if (synced > 0) {
-                                          setSyncMessage(`Successfully synchronized ${synced} inspections!`);
-                                          setTimeout(() => setSyncMessage(''), 3500);
-                                      } else {
-                                          const errors = await firebaseService.getPendingQueueErrors();
-                                          const hasPermissionError = errors.some(err => 
-                                              err.toLowerCase().includes("permission") || 
-                                              err.toLowerCase().includes("unauthorized") || 
-                                              err.toUpperCase().includes("PERMISSION_DENIED")
-                                          );
-                                          if (hasPermissionError) {
-                                              setSyncMessage("Manual Sync failed: Database Write Permission Denied.");
-                                          } else {
-                                              setSyncMessage("Offline database synced locally.");
-                                              setTimeout(() => setSyncMessage(''), 3500);
-                                          }
-                                      }
-                                  }}
-                                  disabled={syncingOfflineData}
-                                  className="bg-amber-600 hover:bg-amber-700 text-white font-bold py-1.5 px-4 rounded-lg text-xs transition whitespace-nowrap shadow-sm disabled:opacity-50"
-                              >
-                                  Force Sync Now
-                              </button>
-                          )}
-                      </div>
-                  )}
-
-                  {/* Sync Completed Notification Alert */}
-                  {syncMessage && !syncingOfflineData && !syncMessage.includes('Processing') && (
-                      <div className="bg-green-50 border border-green-200 rounded-xl p-4 flex items-center gap-3 animate-bounce shadow-sm">
-                          <div className="bg-green-100 text-green-800 p-1.5 rounded-full flex items-center justify-center">
-                              <span className="material-icons text-base">cloud_done</span>
-                          </div>
-                          <span className="text-xs font-bold text-green-900">{syncMessage}</span>
-                      </div>
-                  )}
-
-                  {/* Split Screen Master-Detail Layout */}
-                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 w-full items-start">
-                      
-                      {/* Left Side: Directory Table Viewer */}
-                      <div className="lg:col-span-7 bg-white rounded-2xl shadow-xl p-6 border border-gray-100">
-                          <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 gap-4">
-                              <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
-                                  <span className="material-icons text-indigo-600">format_list_bulleted</span> 
-                                  Inspections Directory
-                              </h2>
-                              <div className="flex flex-col sm:flex-row gap-3">
-                                  <div className="relative">
-                                      <span className="material-icons absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400">search</span>
-                                      <input 
-                                          type="text" 
-                                          placeholder="Search site, address..." 
-                                          className="pl-10 pr-4 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 w-full sm:w-64 text-sm"
-                                          value={portfolioSearch}
-                                          onChange={e => setPortfolioSearch(e.target.value)}
-                                      />
-                                  </div>
-                                  <select 
-                                      className="border rounded-lg px-4 py-2 bg-gray-50 text-sm focus:ring-2 focus:ring-indigo-500"
-                                      value={portfolioStatusFilter}
-                                      onChange={e => setPortfolioStatusFilter(e.target.value)}
-                                  >
-                                      <option value="All">All Statuses</option>
-                                      <option value="Complete">Complete</option>
-                                      <option value="In Progress">In Progress</option>
-                                  </select>
-                              </div>
-                          </div>
-
-                          <div className="overflow-x-auto rounded-lg border border-gray-200">
-                              <table className="w-full text-sm text-left">
-                                  <thead className="bg-gray-50 text-gray-600 font-bold uppercase text-xs">
-                                      <tr>
-                                          <th className="px-4 py-4">Status</th>
-                                          <th className="px-4 py-4">Title / Name</th>
-                                          <th className="px-4 py-4">Project ID</th>
-                                          <th className="px-4 py-4 text-right">Action</th>
-                                      </tr>
-                                  </thead>
-                                  <tbody className="divide-y divide-gray-100">
-                                      {filteredPortfolio.length > 0 ? filteredPortfolio.map((site, idx) => {
-                                          const title = site.siteInfo?.name || 'Untitled Inspection';
-                                          const isComplete = site.rooms?.every((r: any) => r.assets?.length > 0) ?? false;
-                                          const statusText = isComplete ? 'Complete' : 'In Progress';
-                                          const statusColor = isComplete ? 'bg-green-500' : 'bg-yellow-400';
-                                          const siteId = site.id || title.trim().replace(/\s+/g, '_').toLowerCase();
-                                          
-                                          // Pseudo project ID based on first word or hash
-                                          const projectId = title.split(' ')[0].replace(/[^0-9]/g, '') || String(idx + 1000);
-                                          const isSelected = selectedMapSiteId === siteId;
-
-                                          return (
-                                              <tr 
-                                                  key={siteId} 
-                                                  onClick={() => setSelectedMapSiteId(siteId)}
-                                                  className={`cursor-pointer transition-all hover:bg-slate-50 border-l-4 ${
-                                                      isSelected ? 'bg-indigo-50/50 border-indigo-500' : 'border-transparent'
-                                                  }`}
-                                              >
-                                                  <td className="px-4 py-4">
-                                                      <div className="flex items-center gap-2">
-                                                          <div className={`w-2 h-7 rounded-full ${statusColor}`}></div>
-                                                          <span className="font-semibold text-xs text-gray-700">{statusText}</span>
-                                                      </div>
-                                                  </td>
-                                                  <td className="px-4 py-4">
-                                                      <div className="font-bold text-gray-900 text-sm">{title}</div>
-                                                      <div className="text-[11px] text-gray-500">{site.siteInfo?.address}</div>
-                                                      <div className="text-[10px] text-gray-400 mt-0.5">
-                                                          Updated: {site.lastUpdated ? new Date(site.lastUpdated).toLocaleDateString() : 'N/A'}
-                                                      </div>
-                                                  </td>
-                                                  <td className="px-4 py-4 font-mono text-xs text-gray-650">
-                                                      {projectId}
-                                                  </td>
-                                                  <td className="px-4 py-4 text-right">
-                                                      <button 
-                                                          onClick={(e) => {
-                                                              e.stopPropagation();
-                                                              openInspection(site);
-                                                          }}
-                                                          className="bg-indigo-55 text-indigo-700 px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-indigo-100 transition whitespace-nowrap"
-                                                      >
-                                                          {isComplete ? 'Review' : 'Resume'}
-                                                      </button>
-                                                  </td>
-                                              </tr>
-                                          );
-                                      }) : (
-                                          <tr>
-                                              <td colSpan={4} className="px-6 py-12 text-center text-gray-400 border-dashed border-2 m-4 rounded-xl">
-                                                  No inspections match your search criteria.
-                                              </td>
-                                          </tr>
-                                      )}
-                                  </tbody>
-                              </table>
-                          </div>
-                      </div>
-
-                      {/* Right: GIS Asset Locator Map (Column span 5) */}
-                      <div className="lg:col-span-5 bg-white rounded-2xl shadow-xl p-6 border border-gray-100 flex flex-col gap-4 lg:sticky lg:top-4 h-[590px]">
-                          <div className="flex items-center justify-between">
-                              <h3 className="text-base font-extrabold text-gray-950 flex items-center gap-1.5">
-                                  <span className="material-icons text-indigo-600 text-xl">map</span>
-                                  GIS Asset Locator
-                              </h3>
-                              <div className="flex bg-gray-100 p-0.5 rounded-lg text-[10px] font-bold border border-gray-200">
-                                  <button 
-                                      onClick={() => setMapLayerType('streets')}
-                                      className={`px-2 py-1 rounded transition-all ${mapLayerType === 'streets' ? 'bg-white shadow text-indigo-600' : 'text-gray-500'}`}
-                                  >
-                                      Streets
-                                  </button>
-                                  <button 
-                                      onClick={() => setMapLayerType('satellite')}
-                                      className={`px-2 py-1 rounded transition-all ${mapLayerType === 'satellite' ? 'bg-white shadow text-indigo-600' : 'text-gray-500'}`}
-                                  >
-                                      Satellite
-                                  </button>
-                                  <button 
-                                      onClick={() => setMapLayerType('cadastral')}
-                                      className={`px-2 py-1 rounded transition-all ${mapLayerType === 'cadastral' ? 'bg-white shadow text-indigo-600' : 'text-gray-500'}`}
-                                  >
-                                      Cadastral
-                                  </button>
-                              </div>
-                          </div>
-
-                          {/* Map Frame Drawing */}
-                          <div className="relative flex-1 bg-slate-950 rounded-xl overflow-hidden border border-slate-800 shadow-inner">
-                              {/* Background Map Simulation */}
-                              {mapLayerType === 'satellite' ? (
-                                  <div className="absolute inset-0 bg-gradient-to-b from-slate-900 to-slate-950 opacity-95 flex flex-col items-center justify-center p-4">
-                                      {/* Grid representation */}
-                                      <div className="absolute inset-0 bg-[linear-gradient(to_right,#33415515_1px,transparent_1px),linear-gradient(to_bottom,#33415515_1px,transparent_1px)] bg-[size:18px_18px]"></div>
-                                      
-                                      {selectedMapSiteId === 'colombo_port_warehouse_b' ? (
-                                          <svg className="w-5/6 h-5/6 max-h-52 stroke-slate-700 fill-slate-900/50 opacity-80" viewBox="0 0 200 150">
-                                              <rect x="10" y="30" width="180" height="90" rx="4" strokeWidth="0.75" strokeDasharray="2 2" />
-                                              <circle cx="100" cy="75" r="45" stroke="#4f46e5" strokeWidth="0.5" strokeDasharray="1 3" />
-                                              <rect x="80" y="65" width="40" height="20" fill="#1e1b4b" stroke="#6366f1" strokeWidth="1" />
-                                              <path d="M 0,110 L 200,110" stroke="#0ea5e9" strokeWidth="1" />
-                                              <text x="12" y="125" fill="#38bdf8" fontSize="6" fontFamily="monospace">COLOMBO DEEP SHORELINE GRID SECTION C</text>
-                                          </svg>
-                                      ) : selectedMapSiteId === 'sydney_opera_house_annex' ? (
-                                          <svg className="w-5/6 h-5/6 max-h-52 stroke-slate-700 fill-slate-900/50 opacity-80" viewBox="0 0 200 150">
-                                              <path d="M10,80 C50,20 150,20 190,80" stroke="#f43f5e" strokeWidth="0.75" strokeDasharray="2 2" />
-                                              <path d="M30,120 L70,85 L110,120 Z" fill="#1e1b4b" stroke="#f43f5e" strokeWidth="1" />
-                                              <path d="M110,120 L150,85 L190,120 Z" fill="#1e1b4b" stroke="#f43f5e" strokeWidth="1" />
-                                              <path d="M 0,120 L 200,120" stroke="#0ea5e9" strokeWidth="1" />
-                                              <text x="12" y="132" fill="#38bdf8" fontSize="6" fontFamily="monospace">BENNELONG POINT MARITIME REEF GRID</text>
-                                          </svg>
-                                      ) : (
-                                          <svg className="w-5/6 h-5/6 max-h-52 stroke-slate-700 fill-slate-900/50 opacity-80" viewBox="0 0 200 150">
-                                              <rect x="30" y="25" width="140" height="100" strokeWidth="0.75" />
-                                              <line x1="100" y1="25" x2="100" y2="125" stroke="#10b981" strokeWidth="0.5" strokeDasharray="1 1" />
-                                              <line x1="30" y1="75" x2="170" y2="75" stroke="#10b981" strokeWidth="0.5" strokeDasharray="1 1" />
-                                              <circle cx="100" cy="75" r="30" stroke="#10b981" strokeWidth="0.5" />
-                                              <text x="12" y="138" fill="#38bdf8" fontSize="6" fontFamily="monospace">MELBOURNE MULTI-TIER CITY INTERSECT</text>
-                                          </svg>
-                                      )}
-                                  </div>
-                              ) : mapLayerType === 'cadastral' ? (
-                                  <div className="absolute inset-0 bg-emerald-950/20 opacity-95 flex flex-col items-center justify-center p-4">
-                                      <div className="absolute inset-0 bg-[linear-gradient(to_right,#10b98110_1px,transparent_1px),linear-gradient(to_bottom,#10b98110_1px,transparent_1px)] bg-[size:12px_12px]"></div>
-                                      <div className="border border-emerald-500/20 bg-slate-950/90 backdrop-blur p-4 rounded text-emerald-400 text-[10px] font-mono whitespace-pre text-left leading-5 shadow-lg">
-                                          CAD-MAP ID: CAD-{selectedMapSiteId === 'sydney_opera_house_annex' ? '9903' : selectedMapSiteId === 'colombo_port_warehouse_b' ? '8801' : '3304'}<br />
-                                          EST. PLOT SIZE: {selectedMapSiteId === 'sydney_opera_house_annex' ? '12,450 m²' : selectedMapSiteId === 'colombo_port_warehouse_b' ? '18,200 m²' : '9,800 m²'}<br />
-                                          SECTOR: Heavy Commercial Infrastructure<br />
-                                          RATING LEVEL: High-Trust Facility
-                                      </div>
-                                  </div>
-                              ) : (
-                                  <div className="absolute inset-0 bg-slate-950 flex flex-col items-center justify-center p-4 opacity-95">
-                                      <div className="absolute inset-0 bg-[linear-gradient(to_right,#38bdf805_1px,transparent_1px),linear-gradient(to_bottom,#38bdf805_1px,transparent_1px)] bg-[size:28px_28px]"></div>
-                                      <svg className="w-10/12 h-10/12 max-h-52 stroke-slate-800 fill-none" viewBox="0 0 200 150">
-                                          <circle cx="100" cy="75" r="60" stroke="#334155" strokeWidth="0.5" />
-                                          <circle cx="100" cy="75" r="40" stroke="#334155" strokeWidth="0.5" />
-                                          <circle cx="100" cy="75" r="20" stroke="#334155" strokeWidth="0.5" />
-                                          <line x1="100" y1="0" x2="100" y2="150" stroke="#334155" strokeWidth="0.5" />
-                                          <line x1="0" y1="75" x2="200" y2="75" stroke="#334155" strokeWidth="0.5" />
-                                      </svg>
-                                  </div>
-                              )}
-
-                              {/* Telemetry HUD */}
-                              <div className="absolute top-3 left-3 bg-slate-900/90 backdrop-blur border border-slate-800 p-2.5 rounded-lg text-[9px] font-mono text-slate-300 shadow-md text-left">
-                                  <div className="text-indigo-400 font-extrabold uppercase text-[8px] mb-1 tracking-wide">HUD Metrics</div>
-                                  {(() => {
-                                      const site = portfolioData.find(s => {
-                                          const siteId = s.id || (s.siteInfo?.name || '').trim().replace(/\s+/g, '_').toLowerCase();
-                                          return siteId === selectedMapSiteId;
-                                      });
-                                      const latVal = site?.siteInfo?.latitude;
-                                      const lngVal = site?.siteInfo?.longitude;
-                                      return (
-                                          <>
-                                              <div>LAT: {latVal !== undefined ? `${Math.abs(latVal).toFixed(5)} ${latVal >= 0 ? 'N' : 'S'}` : (selectedMapSiteId === 'colombo_port_warehouse_b' ? '6.94970 N' : selectedMapSiteId === 'sydney_opera_house_annex' ? '33.85680 S' : '37.81010 S')}</div>
-                                              <div>LNG: {lngVal !== undefined ? `${Math.abs(lngVal).toFixed(5)} ${lngVal >= 0 ? 'E' : 'W'}` : (selectedMapSiteId === 'colombo_port_warehouse_b' ? '79.84370 E' : selectedMapSiteId === 'sydney_opera_house_annex' ? '151.21530 E' : '144.96280 E')}</div>
-                                          </>
-                                      );
-                                  })()}
-                                  <div>ALT: 12.8m (MSL)</div>
-                                  <div className="mt-1 flex items-center gap-1 text-green-400">
-                                      <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>
-                                      TELEMETRY ACTIVE
-                                  </div>
-                              </div>
-
-                              {/* Big Interactive Floating Icon Pin */}
-                              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center">
-                                  <div className="bg-rose-500 text-white rounded-full p-2 hover:scale-110 active:scale-95 transition-transform duration-100 shadow-lg border-2 border-white animate-bounce pointer-events-auto">
-                                      <span className="material-icons text-lg flex items-center">location_on</span>
-                                  </div>
-                                  <div className="bg-slate-900/95 text-slate-100 border border-slate-800 text-[10px] font-bold px-2 py-0.5 rounded shadow mt-1 whitespace-nowrap select-none">
-                                      {portfolioData.find(s => {
-                                          const siteId = s.id || (s.siteInfo?.name || '').trim().replace(/\s+/g, '_').toLowerCase();
-                                          return siteId === selectedMapSiteId;
-                                      })?.siteInfo?.name || 'Selected Property'}
-                                  </div>
-                              </div>
-                              
-                              {/* Bottom Right Compass */}
-                              <div className="absolute bottom-3 right-3 bg-slate-900/80 backdrop-blur p-1.5 rounded-full border border-slate-800 text-slate-400 flex items-center justify-center">
-                                  <span className="material-icons text-xs" style={{ animation: 'spin 12s linear infinite' }}>explore</span>
-                              </div>
-                          </div>
-
-                          {/* Selected Site Details Overlay Box */}
-                          {(() => {
-                              const selectedSite = portfolioData.find(s => {
-                                  const siteId = s.id || (s.siteInfo?.name || '').trim().replace(/\s+/g, '_').toLowerCase();
-                                  return siteId === selectedMapSiteId;
-                              }) || portfolioData[0];
-
-                              if (!selectedSite) return <div className="text-xs text-gray-400 text-center py-4 bg-slate-50 rounded-xl">Select a site table row to focus GIS properties.</div>;
-                              
-                              const numRooms = selectedSite.rooms?.length || 0;
-                              const numAssets = selectedSite.rooms?.reduce((acc: number, r: any) => acc + (r.assets?.length || 0), 0) || 0;
-                              const extremeCount = selectedSite.rooms?.reduce((acc: number, r: any) => acc + (r.assets?.filter((a: any) => a.riskRating === 'Extreme').length || 0), 0) || 0;
-                              const highCount = selectedSite.rooms?.reduce((acc: number, r: any) => acc + (r.assets?.filter((a: any) => a.riskRating === 'High').length || 0), 0) || 0;
-
-                              return (
-                                  <div className="p-3 bg-slate-50 border border-slate-200/50 rounded-xl flex flex-col gap-2">
-                                      <div className="flex items-center justify-between">
-                                          <div className="font-bold text-gray-950 text-xs sm:text-sm truncate max-w-[190px]">{selectedSite.siteInfo?.name || 'Colombo Site'}</div>
-                                          <span className="text-[9px] font-bold text-slate-500 bg-slate-200/60 px-2 py-0.5 rounded-full min-w-max">
-                                              ISO 5500 Asset Compliance
-                                          </span>
-                                      </div>
-                                      <div className="text-xs text-gray-500 line-clamp-1 italic">
-                                          "{selectedSite.siteInfo?.notes || 'No specific facility audit records loaded.'}"
-                                      </div>
-                                      <div className="grid grid-cols-4 gap-1.5 text-center mt-1">
-                                          <div className="bg-white p-1 rounded border border-gray-100 flex flex-col justify-center">
-                                              <div className="text-[9px] text-gray-400 font-medium leading-none mb-1">Areas</div>
-                                              <div className="text-sm font-extrabold text-slate-800">{numRooms}</div>
-                                          </div>
-                                          <div className="bg-white p-1 rounded border border-gray-100 flex flex-col justify-center">
-                                              <div className="text-[9px] text-gray-400 font-medium leading-none mb-1">Assets</div>
-                                              <div className="text-sm font-extrabold text-slate-800">{numAssets}</div>
-                                          </div>
-                                          <div className="bg-white p-1 rounded border border-red-100 flex flex-col justify-center">
-                                              <div className="text-[9px] text-red-400 font-medium leading-none mb-1">Extreme</div>
-                                              <div className="text-sm font-extrabold text-red-600">{extremeCount}</div>
-                                          </div>
-                                          <div className="bg-white p-1 rounded border border-orange-100 flex flex-col justify-center">
-                                              <div className="text-[9px] text-orange-400 font-medium leading-none mb-1">High</div>
-                                              <div className="text-sm font-extrabold text-orange-600">{highCount}</div>
-                                          </div>
-                                      </div>
-                                      <div className="mt-2 text-right">
-                                          <button 
-                                              onClick={() => openInspection(selectedSite)}
-                                              className="w-full bg-indigo-600 text-white rounded-lg py-2 text-xs font-bold hover:bg-indigo-700 transition flex items-center justify-center gap-1 shadow-sm"
-                                          >
-                                              <span className="material-icons text-sm flex items-center justify-center">visibility</span>
-                                              Audit Selected Facility
-                                          </button>
-                                      </div>
-                                  </div>
-                              );
-                          })()}
-                      </div>
-                  </div>
-
-                  {/* Risk Analysis Dashboard */}
-                  <div className="bg-white rounded-2xl shadow-xl p-8 w-full">
-                      <h2 className="text-2xl font-bold text-gray-800 mb-4 flex items-center gap-2">
-                          <span className="material-icons text-red-600">warning</span> 
-                          Risk Analysis Dashboard
-                      </h2>
-                      <p className="text-gray-600 mb-6">
-                          Aggregated view of high and extreme risk assets across your portfolio.
-                      </p>
-
-                      <div className="mb-8 w-full h-64">
-                          <h3 className="text-sm font-bold text-gray-700 mb-2 uppercase tracking-wide">Risk Build Up Over Time (6 Months)</h3>
-                          {riskChartData.length > 0 ? (
-                              <ResponsiveContainer width="100%" height="100%">
-                                  <AreaChart data={riskChartData}>
-                                      <defs>
-                                          <linearGradient id="colorExtreme" x1="0" y1="0" x2="0" y2="1">
-                                            <stop offset="5%" stopColor="#dc2626" stopOpacity={0.8}/>
-                                            <stop offset="95%" stopColor="#dc2626" stopOpacity={0}/>
-                                          </linearGradient>
-                                          <linearGradient id="colorHigh" x1="0" y1="0" x2="0" y2="1">
-                                            <stop offset="5%" stopColor="#f97316" stopOpacity={0.8}/>
-                                            <stop offset="95%" stopColor="#f97316" stopOpacity={0}/>
-                                          </linearGradient>
-                                      </defs>
-                                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
-                                      <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#6b7280' }} dy={10} />
-                                      <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#6b7280' }} dx={-10} />
-                                      <RechartsTooltip 
-                                          contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                                      />
-                                      <Legend iconType="circle" wrapperStyle={{ paddingTop: '10px' }}/>
-                                      <Area type="monotone" dataKey="Extreme" stroke="#dc2626" fillOpacity={1} fill="url(#colorExtreme)" strokeWidth={2} />
-                                      <Area type="monotone" dataKey="High" stroke="#f97316" fillOpacity={1} fill="url(#colorHigh)" strokeWidth={2} />
-                                  </AreaChart>
-                              </ResponsiveContainer>
-                          ) : (
-                              <div className="w-full h-full flex items-center justify-center text-gray-400 bg-gray-50 rounded-lg border border-dashed border-gray-200">
-                                  Not enough temporal data to build chart.
-                              </div>
-                          )}
-                      </div>
-                      
-                      <div className="overflow-x-auto">
-                          <table className="w-full text-sm text-left">
-                              <thead className="bg-gray-100 text-gray-600 uppercase text-xs">
-                                  <tr>
-                                      <th className="px-4 py-3">Site</th>
-                                      <th className="px-4 py-3">Room</th>
-                                      <th className="px-4 py-3">Category</th>
-                                      <th className="px-4 py-3">Asset Description</th>
-                                      <th className="px-4 py-3">Risk Level</th>
-                                      <th className="px-4 py-3">Condition</th>
-                                  </tr>
-                              </thead>
-                              <tbody className="divide-y divide-gray-100">
-                                  {portfolioData.flatMap(site => 
-                                      (site.rooms || []).flatMap((room: Room) => 
-                                          (room.assets || [])
-                                            .filter(a => a.riskRating === 'High' || a.riskRating === 'Extreme')
-                                            .map(asset => (
-                                                <tr key={`${site.id}-${asset.id}`} className="hover:bg-gray-50 border-l-4" style={{ 
-                                                    borderLeftColor: asset.riskRating === 'Extreme' ? '#dc2626' : '#f97316'
-                                                }}>
-                                                    <td className="px-4 py-3 font-medium text-gray-900">{site.siteInfo?.name || 'Unknown'}</td>
-                                                    <td className="px-4 py-3 text-gray-600">{room.roomName}</td>
-                                                    <td className="px-4 py-3 text-gray-600">{asset.category}</td>
-                                                    <td className="px-4 py-3 text-gray-600">{asset.description}</td>
-                                                    <td className="px-4 py-3">
-                                                        <span className={`px-2 py-1 rounded text-xs font-bold text-white ${asset.riskRating === 'Extreme' ? 'bg-red-600' : 'bg-orange-500'}`}>
-                                                            {asset.riskRating}
-                                                        </span>
-                                                    </td>
-                                                    <td className="px-4 py-3 text-gray-600">{asset.condition}</td>
-                                                </tr>
-                                            ))
-                                      )
-                                  )}
-                                  {portfolioData.flatMap(site => (site.rooms || []).flatMap((room: Room) => (room.assets || []).filter(a => a.riskRating === 'High' || a.riskRating === 'Extreme'))).length === 0 && (
-                                      <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-400">No high or extreme risk assets found in your portfolio.</td></tr>
-                                  )}
-                              </tbody>
-                          </table>
-                      </div>
-                  </div>
-              </div>
           ) : (
               <>
                   {appState.view !== 'welcome' && (
@@ -2336,313 +1950,6 @@ function App() {
                           setPreviewImage={setPreviewImage}
                           hasEditLock={hasEditLock}
                       />
-                  )}
-
-                  {appState.view === 'assessment' && currentRoom && false && (
-                      <div className="space-y-6 animate-fade-in pb-24">
-                          <div className="flex justify-between items-center text-white mb-2">
-                              <button onClick={goToPrevPage} className="flex items-center gap-1 hover:text-indigo-200 transition">
-                                  <span className="material-icons">arrow_back</span> Prev
-                              </button>
-                              <div className="text-center">
-                                  <span className="font-bold text-lg">Page {appState.currentRoomIndex + 1} of {appState.rooms.length}</span>
-                              </div>
-                              <button onClick={goToNextPage} className="flex items-center gap-1 hover:text-indigo-200 transition">
-                                  {appState.currentRoomIndex === appState.rooms.length - 1 ? 'Finish' : 'Next'} <span className="material-icons">arrow_forward</span>
-                              </button>
-                          </div>
-
-                          <div className="bg-white rounded-xl shadow-md p-6">
-                              <div className="flex items-center gap-2 mb-4 text-indigo-600">
-                                  <span className="material-icons">door_front</span>
-                                  <h3 className="font-bold">Room Information</h3>
-                              </div>
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                  <input 
-                                      value={currentRoom.buildingName} 
-                                      onChange={(e) => updateCurrentRoom({ buildingName: e.target.value })}
-                                      placeholder="Building Name"
-                                      className="px-4 py-2 border rounded-lg bg-gray-50 text-black placeholder-gray-500"
-                                  />
-                                  <input 
-                                      value={currentRoom.roomName} 
-                                      onChange={(e) => updateCurrentRoom({ roomName: e.target.value })}
-                                      placeholder="Room Name"
-                                      className="px-4 py-2 border rounded-lg bg-gray-50 text-black placeholder-gray-500"
-                                  />
-                              </div>
-                          </div>
-
-                          <div className="bg-white rounded-xl shadow-md p-6">
-                              <div className="flex justify-between items-center mb-4">
-                                  <div className="flex items-center gap-2 text-indigo-600">
-                                      <span className="material-icons">photo_camera</span>
-                                      <h3 className="font-bold">Capture Images</h3>
-                                  </div>
-                                  <span className="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded">{currentRoom.images.length} / 5</span>
-                              </div>
-                              <div className="flex gap-4 overflow-x-auto pb-2">
-                                  {currentRoom.images.map(img => (
-                                      <div key={img.id} className="relative w-32 h-32 flex-shrink-0">
-                                          <img src={img.dataUrl} className="w-full h-full object-cover rounded-lg shadow-sm border" alt="Room" />
-                                          <button 
-                                              onClick={() => updateCurrentRoom({ images: currentRoom.images.filter(i => i.id !== img.id) })}
-                                              className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1 shadow-md hover:scale-110 transition"
-                                          >
-                                              <span className="material-icons text-xs">close</span>
-                                          </button>
-                                      </div>
-                                  ))}
-                                  <label className="w-32 h-32 flex-shrink-0 border-2 border-dashed border-indigo-300 rounded-lg flex flex-col items-center justify-center text-indigo-500 hover:bg-indigo-50 cursor-pointer transition">
-                                      <span className="material-icons text-3xl">add_a_photo</span>
-                                      <span className="text-xs mt-1">Add Photo</span>
-                                      <input type="file" className="hidden" accept="image/*" multiple onChange={handleImageUpload} />
-                                  </label>
-                              </div>
-                              <div className="mt-6 flex justify-center">
-                                  <button 
-                                      onClick={generateAssetsWithAI}
-                                      disabled={currentRoom.images.length === 0 || processing}
-                                      className="bg-green-600 hover:bg-green-700 text-white px-8 py-3 rounded-full shadow-lg flex items-center gap-2 transition transform hover:scale-105 disabled:opacity-50 disabled:transform-none"
-                                  >
-                                      <span className="material-icons">auto_awesome</span> Generate Asset List
-                                  </button>
-                              </div>
-                          </div>
-
-                          <div className="bg-white rounded-xl shadow-md overflow-hidden">
-                              <div className="bg-gray-50 px-6 py-4 border-b flex justify-between items-center">
-                                  <div className="flex items-center gap-2 text-indigo-600">
-                                      <span className="material-icons">table_chart</span>
-                                      <h3 className="font-bold">Detected Assets</h3>
-                                      <div className="flex gap-4 items-center ml-4 bg-gray-100 px-3 py-1 rounded-full">
-                                        <span className="text-xs">
-                                            <span className="font-bold text-green-600">{currentRoom.assets.filter(a => a.verified).length}</span>
-                                            <span className="text-gray-500">/{currentRoom.assets.length} Verified</span>
-                                        </span>
-                                        <span className="text-xs text-blue-600 font-medium pl-2 border-l border-gray-300">
-                                            {currentRoom.assets.filter(a => a.aiDetected && !a.verified).length} AI Pending
-                                        </span>
-                                      </div>
-                                  </div>
-                                  <div className="flex gap-2">
-                                      {batchMode && (
-                                          <>
-                                              <button onClick={() => batchAction('verify')} className="bg-green-100 text-green-700 px-3 py-1 rounded text-xs font-bold hover:bg-green-200">Verify Selected</button>
-                                              <button onClick={() => batchAction('delete')} className="bg-red-100 text-red-700 px-3 py-1 rounded text-xs font-bold hover:bg-red-200">Delete Selected</button>
-                                          </>
-                                      )}
-                                      <button 
-                                          onClick={toggleBatchMode} 
-                                          className={`px-3 py-1 rounded text-xs font-bold border ${batchMode ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-600 border-gray-300'}`}
-                                      >
-                                          {batchMode ? 'Done' : 'Batch Mode'}
-                                      </button>
-                                  </div>
-                              </div>
-                              <div className="overflow-x-auto">
-                                  <table className="w-full text-sm text-left">
-                                      <thead className="bg-gray-100 text-gray-600 uppercase text-xs">
-                                          <tr>
-                                              {batchMode && <th className="px-4 py-3 w-8"></th>}
-                                              <th className="px-4 py-3 w-16">Image</th>
-                                              <th className="px-4 py-3 w-48">Category</th>
-                                              <th className="px-4 py-3 w-64">Description</th>
-                                              <th className="px-4 py-3 w-28">Condition</th>
-                                              <th className="px-4 py-3 w-20">Risk</th>
-                                              <th className="px-4 py-3 w-16">Age</th>
-                                              <th className="px-4 py-3 w-64">Justification</th>
-                                              <th className="px-4 py-3 w-48">Notes</th>
-                                              <th className="px-4 py-3 w-16">Qty</th>
-                                              <th className="px-4 py-3 w-24">Cost ($)</th>
-                                              <th className="px-4 py-3 w-20">RUL (yr)</th>
-                                              <th className="px-4 py-3 w-12 text-center">AI</th>
-                                              <th className="px-4 py-3 w-16 text-center">Human ✓</th>
-                                              <th className="px-4 py-3 w-12 text-center">Edit</th>
-                                          </tr>
-                                      </thead>
-                                      <tbody className="divide-y divide-gray-100">
-                                          {currentRoom.assets.length === 0 ? (
-                                              <tr><td colSpan={15} className="px-4 py-8 text-center text-gray-400">No assets detected yet. Upload images and generate.</td></tr>
-                                          ) : (
-                                              currentRoom.assets.map(asset => (
-                                                  <tr key={asset.id} className={`hover:bg-gray-100 group border-l-4 transition-colors ${
-                                                      asset.riskRating === 'Extreme' ? 'border-red-600 bg-red-50' :
-                                                      asset.riskRating === 'High' ? 'border-orange-500 bg-orange-50' :
-                                                      asset.riskRating === 'Medium' ? 'border-yellow-400' :
-                                                      'border-transparent'
-                                                  } ${asset.verified && asset.riskRating !== 'Extreme' && asset.riskRating !== 'High' ? 'bg-green-50/50' : ''}`}>
-                                                      {batchMode && (
-                                                          <td className="px-4 py-3">
-                                                              <input 
-                                                                  type="checkbox" 
-                                                                  checked={selectedAssetIds.has(asset.id)}
-                                                                  onChange={() => toggleAssetSelection(asset.id)}
-                                                                  className="rounded text-indigo-600 focus:ring-indigo-500"
-                                                              />
-                                                          </td>
-                                                      )}
-                                                      <td className="px-4 py-3">
-                                                          {currentRoom.croppedImages[asset.id] ? (
-                                                              <img 
-                                                                  src={currentRoom.croppedImages[asset.id]} 
-                                                                  className="w-12 h-12 object-contain border rounded bg-white cursor-zoom-in hover:opacity-80 transition shadow-sm" 
-                                                                  alt="Asset"
-                                                                  onClick={(e) => {
-                                                                      e.stopPropagation();
-                                                                      setPreviewImage(currentRoom.croppedImages[asset.id]);
-                                                                  }}
-                                                                  title="Click to magnify"
-                                                              />
-                                                          ) : (
-                                                              <div className="w-12 h-12 bg-white border rounded shadow-sm flex items-center justify-center text-gray-300">
-                                                                  <span className="material-icons text-sm">image_not_supported</span>
-                                                              </div>
-                                                          )}
-                                                      </td>
-                                                      <td className="px-4 py-3">
-                                                          <select 
-                                                              value={asset.category}
-                                                              onChange={(e) => updateAsset(asset.id, 'category', e.target.value)}
-                                                              className="bg-transparent border-none focus:ring-0 w-full p-0 text-sm font-medium text-gray-900"
-                                                          >
-                                                              {!ASSET_CATEGORIES.includes(asset.category) && <option value={asset.category}>{asset.category}</option>}
-                                                              {ASSET_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
-                                                          </select>
-                                                      </td>
-                                                      <td className="px-4 py-3">
-                                                          <textarea 
-                                                              value={asset.description}
-                                                              onChange={(e) => updateAsset(asset.id, 'description', e.target.value)}
-                                                              className="w-full bg-transparent border-none focus:ring-0 p-0 text-sm resize-none text-gray-700"
-                                                              rows={2}
-                                                          />
-                                                      </td>
-                                                      <td className="px-4 py-3">
-                                                          <select
-                                                              value={asset.condition}
-                                                              onChange={(e) => updateAsset(asset.id, 'condition', e.target.value)}
-                                                              className={`rounded px-2 py-1 text-xs font-bold ${
-                                                                  asset.condition === 'Good' || asset.condition === 'Excellent' ? 'bg-green-100 text-green-800' :
-                                                                  asset.condition === 'Fair' ? 'bg-yellow-100 text-yellow-800' :
-                                                                  'bg-red-100 text-red-800'
-                                                              }`}
-                                                          >
-                                                              {CONDITION_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
-                                                          </select>
-                                                      </td>
-                                                      <td className="px-4 py-3">
-                                                          <div className="flex items-center gap-1 group/risk">
-                                                              <select
-                                                                  value={asset.riskRating || 'Low'}
-                                                                  onChange={(e) => updateAsset(asset.id, 'riskRating', e.target.value)}
-                                                                  className={`rounded px-2 py-1 text-xs font-bold border-0 cursor-pointer ${
-                                                                      asset.riskRating === 'Extreme' ? 'bg-red-600 text-white' :
-                                                                      asset.riskRating === 'High' ? 'bg-orange-500 text-white shadow-sm' :
-                                                                      asset.riskRating === 'Medium' ? 'bg-yellow-400 text-yellow-900' :
-                                                                      'bg-green-100 text-green-800'
-                                                                  }`}
-                                                              >
-                                                                  {RISK_OPTIONS.map(r => <option key={r} value={r}>{r}</option>)}
-                                                              </select>
-                                                              {asset.riskHistory && asset.riskHistory.length > 0 && (
-                                                                  <div className="relative">
-                                                                      <span className="material-icons text-gray-400 hover:text-indigo-600 cursor-help text-[16px] transition-colors">history</span>
-                                                                      <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 w-48 bg-gray-900 text-white text-xs rounded shadow-lg p-2 opacity-0 group-hover/risk:opacity-100 pointer-events-none transition-opacity z-10 before:content-[''] before:absolute before:top-full before:left-1/2 before:-translate-x-1/2 before:border-4 before:border-transparent before:border-t-gray-900">
-                                                                          <div className="font-bold border-b border-gray-700 pb-1 mb-1">Risk History</div>
-                                                                          <ul className="space-y-1 max-h-32 overflow-y-auto">
-                                                                              {asset.riskHistory.slice().reverse().map((rec, i) => (
-                                                                                  <li key={i} className="flex justify-between items-center text-[10px]">
-                                                                                      <span className="text-gray-400">{new Date(rec.timestamp).toLocaleDateString()}</span>
-                                                                                      <span>{rec.previousRisk || 'Low'} <span className="text-gray-500">→</span> <span className={rec.newRisk === 'Extreme' ? 'text-red-400' : rec.newRisk === 'High' ? 'text-orange-400' : 'text-gray-200'}>{rec.newRisk}</span></span>
-                                                                                  </li>
-                                                                              ))}
-                                                                          </ul>
-                                                                      </div>
-                                                                  </div>
-                                                              )}
-                                                          </div>
-                                                      </td>
-                                                      <td className="px-4 py-3">
-                                                          <input 
-                                                              type="text"
-                                                              value={asset.age || ''}
-                                                              onChange={(e) => updateAsset(asset.id, 'age', e.target.value)}
-                                                              className="w-12 bg-transparent text-center border-b border-transparent focus:border-indigo-500 focus:outline-none text-xs"
-                                                              placeholder="-"
-                                                          />
-                                                      </td>
-                                                      <td className="px-4 py-3">
-                                                          <textarea 
-                                                              value={asset.justification}
-                                                              onChange={(e) => updateAsset(asset.id, 'justification', e.target.value)}
-                                                              className="w-full bg-transparent border-none focus:ring-0 p-0 text-xs text-gray-500 resize-none italic"
-                                                              placeholder="No justification"
-                                                              rows={2}
-                                                          />
-                                                      </td>
-                                                      <td className="px-4 py-3">
-                                                          <textarea 
-                                                              value={asset.notes || ''}
-                                                              onChange={(e) => updateAsset(asset.id, 'notes', e.target.value)}
-                                                              className="w-full bg-transparent border-none focus:ring-0 p-0 text-xs text-gray-600 resize-none italic bg-yellow-50 rounded px-1"
-                                                              placeholder="Add notes..."
-                                                              rows={2}
-                                                          />
-                                                      </td>
-                                                      <td className="px-4 py-3">
-                                                          <input 
-                                                              type="text"
-                                                              value={asset.quantity}
-                                                              onChange={(e) => updateAsset(asset.id, 'quantity', e.target.value)}
-                                                              className="w-12 bg-transparent text-center border-b border-transparent focus:border-indigo-500 focus:outline-none"
-                                                          />
-                                                      </td>
-                                                      <td className="px-4 py-3">
-                                                          <input 
-                                                              value={asset.cost}
-                                                              onChange={(e) => updateAsset(asset.id, 'cost', e.target.value)}
-                                                              className="w-20 bg-transparent text-right border-b border-transparent focus:border-indigo-500 focus:outline-none"
-                                                          />
-                                                      </td>
-                                                      <td className="px-4 py-3">
-                                                          <input 
-                                                              value={asset.rul}
-                                                              onChange={(e) => updateAsset(asset.id, 'rul', e.target.value)}
-                                                              className="w-12 bg-transparent text-center border-b border-transparent focus:border-indigo-500 focus:outline-none"
-                                                          />
-                                                      </td>
-                                                      <td className="px-2 py-3 text-center">
-                                                          {asset.aiDetected && (
-                                                              <span className="bg-blue-100 text-blue-700 text-xs font-bold px-2 py-1 rounded">AI</span>
-                                                          )}
-                                                      </td>
-                                                      <td className="px-2 py-3 text-center">
-                                                          <button 
-                                                              onClick={() => updateAsset(asset.id, 'verified', !asset.verified)}
-                                                              className={`rounded-full p-1 transition ${asset.verified ? 'bg-green-500 text-white' : 'text-gray-300 hover:bg-gray-100'}`}
-                                                              title="Toggle Verification"
-                                                          >
-                                                              <span className="material-icons text-sm">{asset.verified ? 'check' : 'radio_button_unchecked'}</span>
-                                                          </button>
-                                                      </td>
-                                                      <td className="px-4 py-3 text-center">
-                                                        <button 
-                                                            onClick={() => setEditingAsset(asset)}
-                                                            className="rounded-full p-2 text-gray-500 hover:text-indigo-600 hover:bg-indigo-50 transition"
-                                                            title="Edit Asset"
-                                                        >
-                                                            <span className="material-icons text-lg">edit</span>
-                                                        </button>
-                                                      </td>
-                                                  </tr>
-                                              ))
-                                          )}
-                                      </tbody>
-                                  </table>
-                              </div>
-                          </div>
-                      </div>
                   )}
 
                   {appState.view === 'reconstruction' && (

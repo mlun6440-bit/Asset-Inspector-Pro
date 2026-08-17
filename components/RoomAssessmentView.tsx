@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useRef, useState } from 'react';
+import { Camera, ImagePlus, Trash2, ZoomIn, Sparkles, UploadCloud, FileImage, ShieldAlert } from 'lucide-react';
 import { Room, Asset } from '../types';
 import { ASSET_CATEGORIES, CONDITION_OPTIONS, RISK_OPTIONS, RISK_COLORS } from '../constants';
 
@@ -18,7 +19,7 @@ interface RoomAssessmentViewProps {
   toggleBatchMode: () => void;
   selectedAssetIds: Set<string>;
   toggleAssetSelection: (id: string) => void;
-  batchAction: (action: 'verify' | 'delete') => void;
+  batchAction: (action: 'verify' | 'unverify' | 'delete') => void;
   setPreviewImage: (src: string | null) => void;
   hasEditLock: boolean;
 }
@@ -43,6 +44,65 @@ export const RoomAssessmentView: React.FC<RoomAssessmentViewProps> = ({
   setPreviewImage,
   hasEditLock,
 }) => {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const [isDragging, setIsDragging] = useState(false);
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const syntheticEvent = {
+        target: {
+          files: e.dataTransfer.files
+        }
+      } as unknown as React.ChangeEvent<HTMLInputElement>;
+      handleImageUpload(syntheticEvent);
+    }
+  };
+
+  const addSamplePhoto = () => {
+    if (currentRoom.images.length >= 10) {
+      alert("Max 10 images per room reached.");
+      return;
+    }
+
+    const sampleImages = [
+      {
+        name: "Plant Room Switchboard DB-01.jpg",
+        dataUrl: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='800' height='600' viewBox='0 0 800 600'><rect width='800' height='600' fill='%231e293b'/><rect x='80' y='60' width='640' height='480' rx='16' fill='%23334155' stroke='%23475569' stroke-width='4'/><rect x='120' y='100' width='260' height='380' rx='8' fill='%230f172a' stroke='%2338bdf8' stroke-width='2'/><rect x='420' y='100' width='260' height='380' rx='8' fill='%230f172a' stroke='%2338bdf8' stroke-width='2'/><circle cx='180' cy='160' r='16' fill='%23ef4444'/><circle cx='240' cy='160' r='16' fill='%23eab308'/><circle cx='300' cy='160' r='16' fill='%2322c55e'/><rect x='150' y='220' width='200' height='30' rx='4' fill='%23475569'/><rect x='150' y='270' width='200' height='30' rx='4' fill='%23475569'/><rect x='150' y='320' width='200' height='30' rx='4' fill='%23475569'/><rect x='150' y='370' width='200' height='30' rx='4' fill='%23475569'/><text x='400' y='525' font-family='sans-serif' font-size='20' font-weight='bold' fill='%23f8fafc' text-anchor='middle'>MAIN SWITCHBOARD MSB-01 (CIVIC CENTRE)</text></svg>"
+      },
+      {
+        name: "HVAC Rooftop Unit AHU-02.jpg",
+        dataUrl: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='800' height='600' viewBox='0 0 800 600'><rect width='800' height='600' fill='%230f172a'/><rect x='100' y='120' width='600' height='360' rx='12' fill='%231e293b' stroke='%2364748b' stroke-width='6'/><circle cx='260' cy='300' r='100' fill='%23334155' stroke='%2338bdf8' stroke-width='6'/><circle cx='540' cy='300' r='100' fill='%23334155' stroke='%2338bdf8' stroke-width='6'/><path d='M260 200 L260 400 M160 300 L360 300' stroke='%2394a3b8' stroke-width='4'/><path d='M540 200 L540 400 M440 300 L640 300' stroke='%2394a3b8' stroke-width='4'/><rect x='320' y='60' width='160' height='60' fill='%23475569'/><text x='400' y='530' font-family='sans-serif' font-size='20' font-weight='bold' fill='%2338bdf8' text-anchor='middle'>ROOFTOP HVAC AHU-02 %26 CHILLER UNIT</text></svg>"
+      }
+    ];
+
+    const selectedSample = sampleImages[currentRoom.images.length % sampleImages.length];
+    const newImg = {
+      id: crypto.randomUUID(),
+      dataUrl: selectedSample.dataUrl,
+      name: selectedSample.name,
+      timestamp: Date.now()
+    };
+
+    updateCurrentRoom({ images: [...currentRoom.images, newImg] });
+  };
+
   return (
     <div className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 space-y-6">
       
@@ -107,40 +167,150 @@ export const RoomAssessmentView: React.FC<RoomAssessmentViewProps> = ({
         </div>
       </div>
 
-      {/* Capture Images */}
+      {/* Capture Images Section */}
       <div className="bg-white rounded-xl shadow-md p-6 text-left">
-        <div className="flex justify-between items-center mb-4">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 mb-4 border-b pb-3">
           <div className="flex items-center gap-2 text-indigo-600">
-            <span className="material-icons">photo_camera</span>
-            <h3 className="font-bold">Capture Images</h3>
+            <Camera className="w-5 h-5 text-indigo-600" />
+            <h3 className="font-bold text-gray-900">Capture & Upload Room Photos</h3>
           </div>
-          <span className="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded">{currentRoom.images.length} / 5</span>
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold bg-indigo-50 text-indigo-700 border border-indigo-200 px-3 py-1 rounded-full">
+              {currentRoom.images.length} / 10 Images Logged
+            </span>
+          </div>
         </div>
-        <div className="flex gap-4 overflow-x-auto pb-2">
+
+        {/* Image Grid + Upload Trigger Area */}
+        <div 
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          className={`grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4 p-3 rounded-xl transition border-2 ${
+            isDragging ? 'border-indigo-500 bg-indigo-50/50' : 'border-indigo-100 bg-gray-50/50'
+          }`}
+        >
+          {/* Uploaded Image Cards */}
           {currentRoom.images.map(img => (
-            <div key={img.id} className="relative w-32 h-32 flex-shrink-0">
-              <img src={img.dataUrl} className="w-full h-full object-cover rounded-lg shadow-sm border" alt="Room" />
-              <button 
-                onClick={() => updateCurrentRoom({ images: currentRoom.images.filter(i => i.id !== img.id) })}
-                className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1 shadow-md hover:scale-110 transition"
-              >
-                <span className="material-icons text-xs">close</span>
-              </button>
+            <div key={img.id} className="relative group aspect-square rounded-xl overflow-hidden border shadow-sm bg-gray-900 flex items-center justify-center">
+              <img 
+                src={img.dataUrl} 
+                className="w-full h-full object-cover transition duration-300 group-hover:scale-105" 
+                alt={img.name || "Room photo"} 
+              />
+              <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPreviewImage(img.dataUrl)}
+                  className="p-1.5 bg-white/90 text-gray-800 rounded-full hover:bg-white shadow transition"
+                  title="View full resolution image"
+                >
+                  <ZoomIn className="w-4 h-4 text-indigo-600" />
+                </button>
+                <button 
+                  type="button"
+                  onClick={() => updateCurrentRoom({ images: currentRoom.images.filter(i => i.id !== img.id) })}
+                  className="p-1.5 bg-red-600 text-white rounded-full hover:bg-red-700 shadow transition"
+                  title="Remove image"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
             </div>
           ))}
-          <label className="w-32 h-32 flex-shrink-0 border-2 border-dashed border-indigo-300 rounded-lg flex flex-col items-center justify-center text-indigo-500 hover:bg-indigo-50 cursor-pointer transition">
-            <span className="material-icons text-3xl">add_a_photo</span>
-            <span className="text-xs mt-1">Add Photo</span>
-            <input type="file" className="hidden" accept="image/*" multiple onChange={handleImageUpload} />
-          </label>
+
+          {/* Primary Upload Tile */}
+          {currentRoom.images.length < 10 && (
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="relative overflow-hidden aspect-square border-2 border-dashed border-indigo-300 rounded-xl flex flex-col items-center justify-center text-indigo-600 hover:bg-indigo-50/80 hover:border-indigo-400 transition p-3 group focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer bg-white"
+            >
+              <ImagePlus className="w-8 h-8 text-indigo-600 group-hover:scale-110 transition duration-200 pointer-events-none" />
+              <span className="text-xs font-bold mt-1.5 text-indigo-900 pointer-events-none">Add Photo</span>
+              <span className="text-[10px] text-gray-500 text-center leading-tight mt-0.5 pointer-events-none">Browse or drop photo</span>
+            </button>
+          )}
         </div>
-        <div className="mt-6 flex justify-center">
+
+        {/* Quick Action Toolbar */}
+        <div className="mt-4 pt-3 border-t flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="px-3.5 py-2 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 rounded-lg text-xs font-bold flex items-center gap-1.5 transition border border-indigo-200"
+            >
+              <UploadCloud className="w-4 h-4 text-indigo-600" />
+              Upload File(s)
+            </button>
+
+            <button
+              type="button"
+              onClick={() => cameraInputRef.current?.click()}
+              className="px-3.5 py-2 bg-slate-100 text-slate-700 hover:bg-slate-200 rounded-lg text-xs font-bold flex items-center gap-1.5 transition border border-slate-200"
+            >
+              <Camera className="w-4 h-4 text-slate-600" />
+              Take Camera Photo
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                const url = prompt("Enter Image URL or Paste Image Link:");
+                if (url && url.trim().length > 0) {
+                  const newImg = {
+                    id: crypto.randomUUID(),
+                    dataUrl: url.trim(),
+                    name: "External Image URL",
+                    timestamp: Date.now()
+                  };
+                  updateCurrentRoom({ images: [...currentRoom.images, newImg] });
+                }
+              }}
+              className="px-3.5 py-2 bg-sky-50 text-sky-700 hover:bg-sky-100 rounded-lg text-xs font-bold flex items-center gap-1.5 transition border border-sky-200"
+            >
+              <span className="material-icons text-sm text-sky-600">link</span>
+              Paste Image URL
+            </button>
+
+            {/* Programmatic Hidden Inputs */}
+            <input
+              type="file"
+              ref={fileInputRef}
+              className="hidden"
+              accept="image/*"
+              multiple
+              onChange={handleImageUpload}
+            />
+            <input
+              type="file"
+              ref={cameraInputRef}
+              className="hidden"
+              accept="image/*"
+              capture="environment"
+              onChange={handleImageUpload}
+            />
+
+            <button
+              type="button"
+              onClick={addSamplePhoto}
+              className="px-3.5 py-2 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-lg text-xs font-bold flex items-center gap-1.5 transition border border-emerald-200"
+              title="Add sample plant room switchboard / HVAC photos"
+            >
+              <FileImage className="w-4 h-4 text-emerald-600" />
+              + Add Sample Photo
+            </button>
+          </div>
+
           <button 
+            type="button"
             onClick={generateAssetsWithAI}
-            disabled={currentRoom.images.length === 0 || processing || !hasEditLock}
-            className="bg-green-600 hover:bg-green-700 text-white px-8 py-3 rounded-full shadow-lg flex items-center gap-2 transition transform hover:scale-105 disabled:opacity-50 disabled:transform-none text-sm font-bold"
+            disabled={currentRoom.images.length === 0 || processing}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2.5 rounded-xl shadow-md flex items-center gap-2 transition transform hover:scale-[1.02] disabled:opacity-50 disabled:transform-none text-xs font-bold ml-auto"
           >
-            <span className="material-icons">auto_awesome</span> Generate Asset List
+            <Sparkles className="w-4 h-4 text-amber-300 animate-pulse" />
+            Generate Asset List with AI ({currentRoom.images.length})
           </button>
         </div>
       </div>

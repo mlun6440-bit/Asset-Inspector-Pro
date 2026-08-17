@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import { SiteInfo } from '../types';
 
 interface WelcomeViewProps {
@@ -36,6 +36,9 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
   loadDemo,
   setAppState,
 }) => {
+  const docInputRef = useRef<HTMLInputElement>(null);
+  const vendorInputRef = useRef<HTMLInputElement>(null);
+
   return (
     <div className="flex-1 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-lg w-full transform transition-all animate-fade-in-up">
@@ -128,13 +131,23 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
 
           <div className="border border-dashed border-gray-300 p-4 rounded-xl">
             <label className="block text-sm font-medium text-gray-700 mb-2">Service / PM Reports (PDF/Image)</label>
-            <label className="flex items-center justify-center w-full p-4 border-2 border-dashed border-indigo-200 bg-indigo-50 rounded-lg cursor-pointer hover:bg-indigo-100 transition">
-              <div className="flex flex-col items-center">
+            <button 
+              type="button"
+              onClick={() => docInputRef.current?.click()}
+              className="relative overflow-hidden flex items-center justify-center w-full p-4 border-2 border-dashed border-indigo-200 bg-indigo-50 rounded-lg cursor-pointer hover:bg-indigo-100 transition text-left"
+            >
+              <div className="flex flex-col items-center pointer-events-none">
                 <span className="material-icons text-indigo-500 mb-1">upload_file</span>
                 <span className="text-xs text-indigo-700 font-medium">Upload Document for AI Analysis</span>
               </div>
-              <input type="file" className="hidden" accept="application/pdf,image/*" onChange={handleDocumentUpload} />
-            </label>
+            </button>
+            <input 
+              type="file" 
+              ref={docInputRef}
+              className="hidden" 
+              accept="application/pdf,image/*" 
+              onChange={handleDocumentUpload} 
+            />
             {siteInfo.documents && siteInfo.documents.length > 0 && (
               <div className="mt-3 space-y-2">
                 <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wide">Processed Documents</h4>
@@ -167,13 +180,23 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
           <div className="border border-dashed border-gray-300 p-4 rounded-xl mt-4">
             <label className="block text-sm font-medium text-gray-700 mb-2">Vendor Asset Register / Audit Report</label>
             <p className="text-xs text-gray-500 mb-3">Upload a vendor asset register or inspection report (PDF, Excel, image). The AI can extract elements from tables, lists, or unstructured narrative text to automatically populate the assessment.</p>
-            <label className="flex items-center justify-center w-full p-4 border-2 border-dashed border-green-200 bg-green-50 rounded-lg cursor-pointer hover:bg-green-100 transition">
-              <div className="flex flex-col items-center">
+            <button 
+              type="button"
+              onClick={() => vendorInputRef.current?.click()}
+              className="relative overflow-hidden flex items-center justify-center w-full p-4 border-2 border-dashed border-green-200 bg-green-50 rounded-lg cursor-pointer hover:bg-green-100 transition text-left"
+            >
+              <div className="flex flex-col items-center pointer-events-none">
                 <span className="material-icons text-green-500 mb-1">domain_verification</span>
                 <span className="text-xs text-green-700 font-medium">Extract Vendor Data</span>
               </div>
-              <input type="file" className="hidden" accept=".csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/pdf,image/*" onChange={handleVendorRegisterUpload} />
-            </label>
+            </button>
+            <input 
+              type="file" 
+              ref={vendorInputRef}
+              className="hidden" 
+              accept=".csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/pdf,image/*" 
+              onChange={handleVendorRegisterUpload} 
+            />
           </div>
 
           <div className="bg-blue-50 p-4 rounded-lg flex items-start gap-3 mt-4">

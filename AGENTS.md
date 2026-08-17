@@ -22,4 +22,5 @@ This workspace runs a self-improving cognitive loop:
 
 ## 📝 LESSONS
 
-- *No lessons recorded yet. The self-learning system is active and ready.*
+- **Deep Modules & Strict Boundaries**: Always isolate complex state side-effects into dedicated hooks (e.g. `usePresenceSession`) and enforce strict Zod schema validation (`services/schemas.ts`) on all incoming AI responses before mutating domain state.
+- **Graph-First Memory & Cascade Risk (Karpathy Method)**: Compile unstructured inspection inputs, blueprints, and tickets directly into a persistent knowledge graph (`compileFacilityKnowledgeGraph`) and ground multi-hop cascade risk and chatbot reasoning strictly on topological graph edges instead of fuzzy document dumps.
