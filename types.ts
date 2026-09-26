@@ -110,7 +110,7 @@ export interface AppState {
   siteInfo: SiteInfo;
   rooms: Room[];
   currentRoomIndex: number;
-  view: 'welcome' | 'assessment' | 'summary' | 'reconstruction' | 'ai-agent-os';
+  view: 'welcome' | 'assessment' | 'summary' | 'reconstruction' | 'ai-agent-os' | 'health-dashboard';
   privacyMode: boolean;
 }
 

@@ -12,11 +12,19 @@ import { PortfolioView } from './components/PortfolioView';
 import { RoomAssessmentView } from './components/RoomAssessmentView';
 import { AssessmentSummaryView } from './components/AssessmentSummaryView';
 import { AIAgentOS } from './components/AIAgentOS';
+import { HealthDashboardView } from './components/HealthDashboardView';
 import { EditAssetModal } from './components/EditAssetModal';
+import { MobileAppFrame } from './components/MobileAppFrame';
 import { format, subMonths, startOfMonth, eachMonthOfInterval, isSameMonth, parseISO } from 'date-fns';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer, AreaChart, Area } from 'recharts';
 
 import { ASSET_CATEGORIES, CONDITION_OPTIONS, RISK_OPTIONS, RISK_COLORS, INITIAL_ROOM_STATE } from './constants';
+import {
+  fetchGooglePlaceSuggestions,
+  geocodeAddressGoogle,
+  reverseGeocodeGoogle,
+  getCurrentDeviceLocation,
+} from './services/googleMapsService';
 
 function App() {
   const [loading, setLoading] = useState(true);
@@ -31,6 +39,7 @@ function App() {
   const [syncMessage, setSyncMessage] = useState('');
   const [selectedMapSiteId, setSelectedMapSiteId] = useState<string>('colombo_port_warehouse_b');
   const [mapLayerType, setMapLayerType] = useState<'streets' | 'satellite' | 'cadastral'>('satellite');
+  const [isMobileMode, setIsMobileMode] = useState<boolean>(false);
   
   // NEW: Address Autocomplete & Geocoding States
   const [addressSuggestions, setAddressSuggestions] = useState<any[]>([]);
@@ -272,53 +281,68 @@ function App() {
 
     setIsSearchingAddress(true);
     try {
-      const response = await fetch(
-        `https://photon.komoot.io/api?q=${encodeURIComponent(value)}&limit=5`
-      );
-      if (response.ok) {
-        const data = await response.json();
-        if (data && data.features) {
-          const suggestions = data.features.map((feat: any) => {
-            const props = feat.properties;
-            const geom = feat.geometry;
-            const parts = [
-              props.name,
-              props.street,
-              props.city || props.town,
-              props.state,
-              props.country
-            ].filter(Boolean);
-            const label = [...new Set(parts)].join(', ');
-            return {
-              label: label || props.name || 'Unnamed Locality',
-              latitude: geom.coordinates[1],
-              longitude: geom.coordinates[0],
-              raw: feat
-            };
-          }).filter((s: any) => s.label);
-          
-          setAddressSuggestions(suggestions);
-          setShowSuggestions(suggestions.length > 0);
-        } else {
-          setAddressSuggestions([]);
-          setShowSuggestions(false);
-        }
+      // 1. Try Google Maps Places Suggestions
+      const googleSuggestions = await fetchGooglePlaceSuggestions(value);
+      if (googleSuggestions && googleSuggestions.length > 0) {
+        // Geocode each suggestion or provide structured suggestions
+        const mapped = googleSuggestions.map((s) => ({
+          label: s.description,
+          placeId: s.placeId,
+          mainText: s.mainText,
+          secondaryText: s.secondaryText,
+          latitude: s.latitude,
+          longitude: s.longitude,
+        }));
+        setAddressSuggestions(mapped);
+        setShowSuggestions(true);
+        return;
+      }
+
+      // 2. Direct Geocoding fallback with Google Maps Geocoder
+      const geocoded = await geocodeAddressGoogle(value);
+      if (geocoded) {
+        setAddressSuggestions([{
+          label: geocoded.formattedAddress,
+          placeId: geocoded.placeId,
+          latitude: geocoded.latitude,
+          longitude: geocoded.longitude,
+        }]);
+        setShowSuggestions(true);
+      } else {
+        setAddressSuggestions([]);
+        setShowSuggestions(false);
       }
     } catch (err) {
-      console.warn("Geocoding fetch failed:", err);
+      console.warn("Google Maps place search notice:", err);
     } finally {
       setIsSearchingAddress(false);
     }
   };
 
-  const handleSelectSuggestion = (suggestion: any) => {
+  const handleSelectSuggestion = async (suggestion: any) => {
+    let lat = suggestion.latitude;
+    let lng = suggestion.longitude;
+
+    if (lat === undefined || lng === undefined) {
+      try {
+        const resolved = await geocodeAddressGoogle(suggestion.label);
+        if (resolved) {
+          lat = resolved.latitude;
+          lng = resolved.longitude;
+        }
+      } catch (e) {
+        console.warn("Could not geocode selected suggestion:", e);
+      }
+    }
+
     setAppState(prev => ({
       ...prev,
       siteInfo: {
         ...prev.siteInfo,
         address: suggestion.label,
-        latitude: suggestion.latitude,
-        longitude: suggestion.longitude
+        latitude: lat,
+        longitude: lng,
+        placeId: suggestion.placeId,
       }
     }));
     setAddressSuggestions([]);
@@ -494,22 +518,16 @@ function App() {
     let lng = appState.siteInfo.longitude;
 
     if (appState.siteInfo.address && (lat === undefined || lng === undefined)) {
-      setLoadingText("Resolving site address coordinates...");
+      setLoadingText("Resolving facility coordinates with Google Maps...");
       setProcessing(true);
       try {
-        const response = await fetch(
-          `https://photon.komoot.io/api?q=${encodeURIComponent(appState.siteInfo.address)}&limit=1`
-        );
-        if (response.ok) {
-          const data = await response.json();
-          if (data && data.features && data.features.length > 0) {
-            const geom = data.features[0].geometry;
-            lat = geom.coordinates[1];
-            lng = geom.coordinates[0];
-          }
+        const geoResult = await geocodeAddressGoogle(appState.siteInfo.address);
+        if (geoResult) {
+          lat = geoResult.latitude;
+          lng = geoResult.longitude;
         }
       } catch (err) {
-        console.warn("Background geocoding on submit failed", err);
+        console.warn("Background geocoding on submit notice:", err);
       } finally {
         setProcessing(false);
         setLoadingText("");
@@ -572,12 +590,19 @@ function App() {
 
   const updateCurrentRoom = (updates: Partial<Room>) => {
     if (!hasEditLock) return;
+    let nextRooms: Room[] = [];
+    let siteInfoForSave: SiteInfo = appState.siteInfo;
     setAppState(prev => {
-      const newRooms = [...prev.rooms];
-      newRooms[prev.currentRoomIndex] = { ...newRooms[prev.currentRoomIndex], ...updates };
-      firebaseService.saveState(prev.siteInfo, newRooms);
-      return { ...prev, rooms: newRooms };
+      nextRooms = [...prev.rooms];
+      nextRooms[prev.currentRoomIndex] = { ...nextRooms[prev.currentRoomIndex], ...updates };
+      siteInfoForSave = prev.siteInfo;
+      return { ...prev, rooms: nextRooms };
     });
+    if (nextRooms.length > 0) {
+      firebaseService.saveState(siteInfoForSave, nextRooms).catch(err => {
+        console.warn("Background saveState notice:", err);
+      });
+    }
   };
 
   const createAuditEntry = (action: string, details: string): AuditEntry => ({
@@ -614,23 +639,25 @@ function App() {
     updateCurrentRoom({ assets: updatedAssets });
   };
 
-  const saveEditedAsset = () => {
-      if(!editingAsset) return;
+  const saveEditedAsset = (incomingAsset?: Asset) => {
+      const targetAsset = incomingAsset || editingAsset;
+      if(!targetAsset) return;
       const room = appState.rooms[appState.currentRoomIndex];
+      if (!room) return;
       const updatedAssets = room.assets.map(a => {
-        if (a.id === editingAsset.id) {
+        if (a.id === targetAsset.id) {
             // Compare and Log changes for key fields
             const changes: string[] = [];
-            if(a.condition !== editingAsset.condition) changes.push(`Condition: ${a.condition} -> ${editingAsset.condition}`);
+            if(a.condition !== targetAsset.condition) changes.push(`Condition: ${a.condition} -> ${targetAsset.condition}`);
             
             let riskHistory = [...(a.riskHistory || [])];
-            if(a.riskRating !== editingAsset.riskRating) {
-                changes.push(`Risk: ${a.riskRating} -> ${editingAsset.riskRating}`);
+            if(a.riskRating !== targetAsset.riskRating) {
+                changes.push(`Risk: ${a.riskRating} -> ${targetAsset.riskRating}`);
                 riskHistory.push({
                     timestamp: Date.now(),
                     actor: 'USER',
                     previousRisk: a.riskRating,
-                    newRisk: editingAsset.riskRating || 'Low' // Default to Low if missing
+                    newRisk: targetAsset.riskRating || 'Low' // Default to Low if missing
                 });
             }
             
@@ -641,7 +668,7 @@ function App() {
                  newTrail.push(createAuditEntry('EDIT', 'Updated asset details'));
             }
 
-            return { ...editingAsset, auditTrail: newTrail, riskHistory };
+            return { ...targetAsset, auditTrail: newTrail, riskHistory };
         }
         return a;
       });
@@ -651,80 +678,37 @@ function App() {
 
   const isBuildingFabric = (category: string) => category.startsWith("Building Structural & Fabric");
 
-  const detectLocation = () => {
+  const detectLocation = async () => {
     setAddressError(null);
-    if (!navigator.geolocation) {
-      setAddressError("Geolocation is not supported by your browser. Please type your address manually below.");
-      return;
-    }
-    
-    setLoadingText("Detecting location...");
+    setLoadingText("Detecting device GPS coordinates...");
     setProcessing(true);
 
-    navigator.geolocation.getCurrentPosition(
-      async (position) => {
-        const { latitude, longitude } = position.coords;
-        let addressFound = false;
-        let finalAddress = "";
+    try {
+      const position = await getCurrentDeviceLocation();
+      const { latitude, longitude } = position;
+      
+      setLoadingText("Resolving location with Google Maps...");
+      const geoResult = await reverseGeocodeGoogle(latitude, longitude);
 
-        try {
-          const response = await fetch(
-            `https://photon.komoot.io/reverse?lat=${latitude}&lon=${longitude}`
-          );
-          if (response.ok) {
-            const data = await response.json();
-            if (data.features && data.features.length > 0) {
-                const props = data.features[0].properties;
-                const parts = [
-                    props.name,
-                    props.street, 
-                    props.city, 
-                    props.state, 
-                    props.country
-                ].filter(Boolean);
-                
-                if (parts.length > 0) {
-                    const uniqueParts = [...new Set(parts)];
-                    finalAddress = uniqueParts.join(', ');
-                    addressFound = true;
-                }
-            }
-          }
-        } catch (e) {
-          console.warn("Geocoding failed", e);
+      const finalAddress = geoResult?.formattedAddress || `Lat: ${latitude.toFixed(5)}, Long: ${longitude.toFixed(5)}`;
+
+      setAppState(prev => ({
+        ...prev,
+        siteInfo: {
+          ...prev.siteInfo,
+          address: finalAddress,
+          latitude,
+          longitude,
+          placeId: geoResult?.placeId,
         }
-
-        if (!addressFound) {
-            finalAddress = `Lat: ${latitude.toFixed(5)}, Long: ${longitude.toFixed(5)}`;
-        }
-
-        setAppState(prev => ({
-          ...prev,
-          siteInfo: {
-            ...prev.siteInfo,
-            address: finalAddress,
-            latitude,
-            longitude
-          }
-        }));
-
-        setProcessing(false);
-        setLoadingText("");
-      },
-      (error) => {
-        console.error("Geolocation error", error);
-        let msg = "Location error.";
-        if (error.code === 1) msg = "Location permission denied. Please allow location access or type your address manually.";
-        else if (error.code === 2) msg = "Location unavailable. Please type your address manually.";
-        else if (error.code === 3) msg = "Location request timed out. Please type your address manually.";
-        
-        setAddressError(`${msg} (Details: ${error.message || 'Unknown'})`);
-        
-        setProcessing(false);
-        setLoadingText("");
-      },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-    );
+      }));
+    } catch (err: any) {
+      console.warn("GPS Detection error:", err);
+      setAddressError(err?.message || "Could not retrieve GPS location. Please enter address manually.");
+    } finally {
+      setProcessing(false);
+      setLoadingText("");
+    }
   };
 
   const togglePrivacyMode = () => {
@@ -760,22 +744,41 @@ function App() {
     setLoadingText('Processing & optimizing uploaded photo(s)...');
 
     try {
-      const newImages = await Promise.all(
-        files.map(file => {
-          return new Promise<{ id: string; dataUrl: string; name: string; timestamp: number }>((resolve, reject) => {
+      const newImages: Array<{ id: string; dataUrl: string; name: string; timestamp: number }> = [];
+
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        if (files.length > 1) {
+          setLoadingText(`Optimizing photo ${i + 1} of ${files.length}...`);
+        }
+
+        try {
+          const imageObj = await new Promise<{ id: string; dataUrl: string; name: string; timestamp: number }>((resolve) => {
             const reader = new FileReader();
-            reader.onerror = () => reject(new Error(`Failed to read file ${file.name}`));
+            reader.onerror = () => {
+              console.warn(`FileReader error on ${file.name}`);
+              resolve({
+                id: crypto.randomUUID(),
+                dataUrl: '',
+                name: file.name,
+                timestamp: Date.now()
+              });
+            };
             reader.onload = (event) => {
               const result = event.target?.result as string;
               if (!result) {
-                reject(new Error("Empty image file payload"));
+                resolve({
+                  id: crypto.randomUUID(),
+                  dataUrl: '',
+                  name: file.name,
+                  timestamp: Date.now()
+                });
                 return;
               }
 
               // Compress & downscale large photos for high speed and minimal RAM usage
               const img = new Image();
               img.onerror = () => {
-                // If canvas decoding fails, fallback to raw data URL
                 resolve({
                   id: crypto.randomUUID(),
                   dataUrl: result,
@@ -784,53 +787,72 @@ function App() {
                 });
               };
               img.onload = () => {
-                const MAX_DIM = 1600;
-                let width = img.width;
-                let height = img.height;
+                try {
+                  const MAX_DIM = 1280;
+                  let width = img.naturalWidth || img.width || 800;
+                  let height = img.naturalHeight || img.height || 600;
 
-                if (width > MAX_DIM || height > MAX_DIM) {
-                  if (width > height) {
-                    height = Math.round((height * MAX_DIM) / width);
-                    width = MAX_DIM;
-                  } else {
-                    width = Math.round((width * MAX_DIM) / height);
-                    height = MAX_DIM;
+                  if (width > MAX_DIM || height > MAX_DIM) {
+                    if (width > height) {
+                      height = Math.round((height * MAX_DIM) / width);
+                      width = MAX_DIM;
+                    } else {
+                      width = Math.round((width * MAX_DIM) / height);
+                      height = MAX_DIM;
+                    }
                   }
-                }
 
-                const canvas = document.createElement('canvas');
-                canvas.width = width;
-                canvas.height = height;
-                const ctx = canvas.getContext('2d');
+                  const canvas = document.createElement('canvas');
+                  canvas.width = Math.max(1, width);
+                  canvas.height = Math.max(1, height);
+                  const ctx = canvas.getContext('2d');
 
-                if (!ctx) {
+                  if (!ctx) {
+                    resolve({
+                      id: crypto.randomUUID(),
+                      dataUrl: result,
+                      name: file.name,
+                      timestamp: Date.now()
+                    });
+                    return;
+                  }
+
+                  ctx.fillStyle = '#ffffff';
+                  ctx.fillRect(0, 0, canvas.width, canvas.height);
+                  ctx.drawImage(img, 0, 0, width, height);
+                  const compressed = canvas.toDataURL('image/jpeg', 0.82);
+                  resolve({
+                    id: crypto.randomUUID(),
+                    dataUrl: compressed,
+                    name: file.name,
+                    timestamp: Date.now()
+                  });
+                } catch {
                   resolve({
                     id: crypto.randomUUID(),
                     dataUrl: result,
                     name: file.name,
                     timestamp: Date.now()
                   });
-                  return;
                 }
-
-                ctx.drawImage(img, 0, 0, width, height);
-                const compressed = canvas.toDataURL('image/jpeg', 0.85);
-                resolve({
-                  id: crypto.randomUUID(),
-                  dataUrl: compressed,
-                  name: file.name,
-                  timestamp: Date.now()
-                });
               };
               img.src = result;
             };
             reader.readAsDataURL(file);
           });
-        })
-      );
 
-      const updatedImages = [...currentRoom.images, ...newImages];
-      updateCurrentRoom({ images: updatedImages });
+          if (imageObj.dataUrl) {
+            newImages.push(imageObj);
+          }
+        } catch (fileErr) {
+          console.warn(`Could not process file ${file.name}:`, fileErr);
+        }
+      }
+
+      if (newImages.length > 0) {
+        const updatedImages = [...currentRoom.images, ...newImages];
+        updateCurrentRoom({ images: updatedImages });
+      }
     } catch (err) {
       console.error("Error reading photo upload:", err);
       alert("Failed to process selected image(s). Please ensure they are valid image files (JPG, PNG, WEBP, GIF).");
@@ -844,28 +866,40 @@ function App() {
   };
 
   const generateAssetsWithAI = async () => {
-    if (!hasEditLock) return;
     const currentRoom = appState.rooms[appState.currentRoomIndex];
-    if (currentRoom.images.length === 0) return;
+    if (!currentRoom) return;
+    if (!currentRoom.images || currentRoom.images.length === 0) {
+      alert("Please add or upload at least one area photo first.");
+      return;
+    }
+
+    if (!hasEditLock) {
+      setHasEditLock(true);
+      setIsEditingPresence(true);
+    }
 
     setProcessing(true);
-    setLoadingText('Analyzing Building Fabric & Services...');
+    setLoadingText('Analyzing Building Fabric & Services (ISO 55000)...');
 
     try {
       const detectedAssets = await detectAssetsWithBoundingBoxes(currentRoom.images, ASSET_CATEGORIES, appState.privacyMode, currentRoom.assets);
       
-      setLoadingText('Cropping asset images...');
+      setLoadingText('Cropping asset bounding boxes...');
       const newCroppedImages = { ...currentRoom.croppedImages };
       
-      let finalAssets = [...currentRoom.assets];
+      let finalAssets = [...(currentRoom.assets || [])];
 
       for (const newA of detectedAssets) {
         if (newA.boundingBox && newA.sourceImageIndex !== undefined) {
            if (newA.sourceImageIndex >= 0 && newA.sourceImageIndex < currentRoom.images.length) {
                const sourceImg = currentRoom.images[newA.sourceImageIndex];
                if (sourceImg && sourceImg.dataUrl) {
-                   const croppedDataUrl = await cropImage(sourceImg.dataUrl, newA.boundingBox);
-                   newCroppedImages[newA.id] = croppedDataUrl;
+                   try {
+                     const croppedDataUrl = await cropImage(sourceImg.dataUrl, newA.boundingBox);
+                     newCroppedImages[newA.id] = croppedDataUrl;
+                   } catch (cropErr) {
+                     console.warn("Crop skipped for asset:", cropErr);
+                   }
                }
            }
         }
@@ -912,8 +946,7 @@ function App() {
       });
 
     } catch (e) {
-      console.error(e);
-      alert("AI Generation failed. Check console.");
+      console.error("AI Asset generation error:", e);
     } finally {
       setProcessing(false);
       setLoadingText('');
@@ -1282,6 +1315,307 @@ function App() {
       }));
   };
 
+  const populateSampleBuildingData = () => {
+    const makeAsset = (
+      name: string,
+      category: string,
+      description: string,
+      condition: string,
+      riskRating: string,
+      cost: string,
+      age: string,
+      rul: string,
+      justification: string = 'Routine multi-point facility condition audit'
+    ): Asset => ({
+      id: crypto.randomUUID(),
+      name,
+      category,
+      description,
+      condition,
+      riskRating,
+      cost,
+      age,
+      rul,
+      justification,
+      quantity: 1,
+      aiDetected: true,
+      verified: true,
+      auditTrail: []
+    });
+
+    const sampleRooms: Room[] = [
+      {
+        ...INITIAL_ROOM_STATE,
+        id: crypto.randomUUID(),
+        roomName: 'Ground Floor Foyer & Entrance',
+        buildingName: appState.siteInfo.name || 'Commercial Tower A',
+        images: [],
+        assets: [
+          makeAsset(
+            'Automatic Sliding Glass Doors',
+            'Building Structural & Fabric,Automatic Doors',
+            'Bi-parting optical sensor sliding doors with emergency breakout',
+            'Fair',
+            'Medium',
+            '8500',
+            '9 years',
+            '3 years',
+            'Guide roller wear detected on east portal'
+          ),
+          makeAsset(
+            'Foyer Architectural LED Downlights',
+            'Electrical Systems,Lighting',
+            'Recessed high-output LED architectural downlights with DALI dimming',
+            'Good',
+            'Low',
+            '3200',
+            '4 years',
+            '8 years'
+          ),
+          makeAsset(
+            'Under-Ceiling Cassette Split AC',
+            'HVAC & Refrigeration,Split AC',
+            'Under-ceiling cassette split air conditioner unit',
+            'Good',
+            'Low',
+            '5400',
+            '5 years',
+            '7 years'
+          ),
+          makeAsset(
+            '4.5kg Dry Powder Fire Extinguisher',
+            'Fire Systems,Fire Extinguishers',
+            '4.5kg ABE dry chemical powder extinguisher with maintenance tag',
+            'Excellent',
+            'Low',
+            '450',
+            '1 year',
+            '9 years'
+          )
+        ]
+      },
+      {
+        ...INITIAL_ROOM_STATE,
+        id: crypto.randomUUID(),
+        roomName: 'Basement Central Plant & Boiler Room',
+        buildingName: appState.siteInfo.name || 'Commercial Tower A',
+        images: [],
+        assets: [
+          makeAsset(
+            'Primary Hydronic Heating Boiler',
+            'HVAC & Refrigeration,Boilers',
+            'Natural gas condensing hydronic boiler unit with burner assembly',
+            'Poor',
+            'Extreme',
+            '24000',
+            '16 years',
+            '0 years',
+            'Severe heat exchanger corrosion, casing burn marks, safety relief dripping'
+          ),
+          makeAsset(
+            'Primary Circulation Pumps (Pair)',
+            'HVAC & Refrigeration,Pumps',
+            'Twin base-mounted centrifugal heating water circulation pumps',
+            'Poor',
+            'High',
+            '9500',
+            '14 years',
+            '1 year',
+            'Bearing noise detected and mechanical seal weeping water onto base'
+          ),
+          makeAsset(
+            'Main Low-Voltage Switchboard (MSB)',
+            'Electrical Systems,Main Switchboard',
+            'Floor-standing form 3b 1600A main switchboard with air circuit breakers',
+            'Fair',
+            'High',
+            '35000',
+            '18 years',
+            '3 years',
+            'Thermal hot spots identified on incoming busbar ties, arc chute aging'
+          ),
+          makeAsset(
+            'Basement Sump Pump & Effluent Pit',
+            'Plumbing Systems,Floor Wastes',
+            'Dual submersible effluent stormwater pit pumps with float switches',
+            'Fair',
+            'Medium',
+            '4200',
+            '8 years',
+            '2 years',
+            'Impeller cavitation wear identified during wet well inspection'
+          )
+        ]
+      },
+      {
+        ...INITIAL_ROOM_STATE,
+        id: crypto.randomUUID(),
+        roomName: 'Level 1 Data & Telecoms Server Room',
+        buildingName: appState.siteInfo.name || 'Commercial Tower A',
+        images: [],
+        assets: [
+          makeAsset(
+            'Precision Computer Room AC (CRAC)',
+            'HVAC & Refrigeration,Split AC',
+            'In-row precision computer room air conditioning unit with EC fans',
+            'Poor',
+            'High',
+            '18000',
+            '12 years',
+            '1 year',
+            'Compressor 2 vibration fault; intermittent high temperature alarms logged'
+          ),
+          makeAsset(
+            'Modular UPS Battery Bank (60kVA)',
+            'Electrical Systems,UPS',
+            'Online double-conversion uninterruptible power supply with sealed lead acid modules',
+            'Fair',
+            'High',
+            '14500',
+            '6 years',
+            '1 year',
+            'Battery string impedance tests show cell degradation'
+          ),
+          makeAsset(
+            'FM-200 Clean Agent Fire Suppression',
+            'Fire Systems,Gas Suppression System',
+            'Gaseous total flooding fire extinguishing system cylinder & solenoids',
+            'Excellent',
+            'Low',
+            '12000',
+            '2 years',
+            '15 years'
+          ),
+          makeAsset(
+            'Biometric Access Control Reader',
+            'Security Systems,Access Control Readers',
+            'Smartcard RFID & capacitive biometric fingerprint reader',
+            'Excellent',
+            'Low',
+            '1800',
+            '2 years',
+            '8 years'
+          )
+        ]
+      },
+      {
+        ...INITIAL_ROOM_STATE,
+        id: crypto.randomUUID(),
+        roomName: 'Level 2 Executive Office Suite',
+        buildingName: appState.siteInfo.name || 'Commercial Tower A',
+        images: [],
+        assets: [
+          makeAsset(
+            'Commercial Carpet Tile Flooring',
+            'Building Structural & Fabric,Flooring',
+            'Heavy duty commercial tufted nylon loop pile carpet tiles',
+            'Good',
+            'Low',
+            '6400',
+            '3 years',
+            '7 years'
+          ),
+          makeAsset(
+            'Acoustic Suspended Ceiling Grid',
+            'Building Structural & Fabric,Ceiling',
+            'Exposed tee suspended ceiling system with mineral fiber acoustic tiles',
+            'Good',
+            'Low',
+            '5100',
+            '3 years',
+            '12 years'
+          ),
+          makeAsset(
+            'VAV Air Terminal Diffusers',
+            'HVAC & Refrigeration,Diffusers & Grilles',
+            'Variable air volume swirl ceiling diffusers with electronic actuators',
+            'Good',
+            'Low',
+            '4600',
+            '4 years',
+            '10 years'
+          ),
+          makeAsset(
+            'Smart Dimmable LED Troffers',
+            'Electrical Systems,Lighting',
+            'Low-glare microprismatic LED office lighting with daylight harvesting',
+            'Excellent',
+            'Low',
+            '7200',
+            '2 years',
+            '10 years'
+          )
+        ]
+      },
+      {
+        ...INITIAL_ROOM_STATE,
+        id: crypto.randomUUID(),
+        roomName: 'Level 2 Staff Kitchen & Amenities',
+        buildingName: appState.siteInfo.name || 'Commercial Tower A',
+        images: [],
+        assets: [
+          makeAsset(
+            'Commercial Under-Bench Boiling Unit',
+            'Plumbing Systems,Hot Water Service',
+            'Under-bench filtered boiling and chilled drinking water dispenser',
+            'Fair',
+            'Medium',
+            '3800',
+            '5 years',
+            '2 years',
+            'Descaling required; heating element cycling continuously'
+          ),
+          makeAsset(
+            'Stainless Steel Double Bowl Sink & Mixer',
+            'Plumbing Systems,Sinks & Basins',
+            'Grade 304 stainless steel sink with swivel gooseneck lever mixer',
+            'Good',
+            'Low',
+            '1500',
+            '4 years',
+            '8 years'
+          ),
+          makeAsset(
+            'Restroom Exhaust Ventilation Fan',
+            'HVAC & Refrigeration,Fans',
+            'In-line centrifugal ducted exhaust fan with acoustic attenuator',
+            'Average',
+            'Low',
+            '2200',
+            '7 years',
+            '4 years'
+          ),
+          makeAsset(
+            'Dual Flush Wall-Hung Toilets & Cisterns',
+            'Plumbing Systems,Toilets & Urinals',
+            'Vitreous china wall-hung pans with in-wall pneumatic flush valves',
+            'Good',
+            'Low',
+            '4800',
+            '4 years',
+            '9 years'
+          )
+        ]
+      }
+    ];
+
+    setAppState(prev => {
+      const updated = {
+        ...prev,
+        siteInfo: {
+          ...prev.siteInfo,
+          name: prev.siteInfo.name || 'Commercial Tower A',
+          numRooms: sampleRooms.length
+        },
+        rooms: sampleRooms,
+        view: 'health-dashboard' as const,
+        currentRoomIndex: 0
+      };
+      firebaseService.saveState(updated.siteInfo, updated.rooms);
+      return updated;
+    });
+  };
+
   const riskChartData = useMemo(() => {
       if (!portfolioData || portfolioData.length === 0) return [];
       
@@ -1304,8 +1638,12 @@ function App() {
                           
                           for (const entry of sortedHistory) {
                               const entryDate = new Date(entry.timestamp);
-                              // If this change happened AFTER the month we are looking at (and not in the same month)
-                              if (entryDate > month && entryDate.getMonth() !== month.getMonth() && entryDate.getFullYear() !== month.getFullYear()) {
+                              // Separate checks for year and month to accurately capture past months in the same year
+                              const isFutureMonth = 
+                                entryDate.getFullYear() > month.getFullYear() || 
+                                (entryDate.getFullYear() === month.getFullYear() && entryDate.getMonth() > month.getMonth());
+                                
+                              if (isFutureMonth) {
                                   currentRisk = entry.previousRisk || 'Low';
                               }
                           }
@@ -1356,312 +1694,8 @@ function App() {
 
   const currentRoom = appState.rooms[appState.currentRoomIndex];
 
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-[#667eea] to-[#764ba2] text-gray-900 pb-20 font-sans">
-      {processing && (
-          <div className="fixed inset-0 bg-black/80 z-50 flex flex-col items-center justify-center text-white">
-              <div className="w-12 h-12 border-4 border-white/30 border-t-white rounded-full animate-spin mb-4"></div>
-              <p className="text-xl font-medium">{loadingText}</p>
-          </div>
-      )}
-      
-      {previewImage && (
-          <div 
-              className="fixed inset-0 z-[60] flex items-center justify-center bg-black/95 p-4 animate-fade-in"
-              onClick={() => setPreviewImage(null)}
-          >
-              <div className="relative max-w-full max-h-full">
-                  <img src={previewImage} className="max-w-full max-h-[90vh] rounded shadow-2xl object-contain" alt="Preview" />
-                  <button 
-                      onClick={() => setPreviewImage(null)}
-                      className="absolute -top-12 right-0 text-white hover:text-gray-300 bg-white/10 rounded-full p-2"
-                  >
-                      <span className="material-icons text-3xl">close</span>
-                  </button>
-                  <div className="text-center text-white/50 text-sm mt-2">Click anywhere to close</div>
-              </div>
-          </div>
-      )}
-
-      {showProfileModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-              <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden">
-                  <div className="p-4 border-b flex justify-between items-center bg-indigo-50">
-                      <h3 className="text-lg font-bold text-indigo-800 flex items-center gap-2">
-                          <span className="material-icons">account_circle</span> Customize Inspector Profile
-                      </h3>
-                      <button onClick={() => setShowProfileModal(false)} className="text-gray-500 hover:text-gray-700">
-                          <span className="material-icons">close</span>
-                      </button>
-                  </div>
-                  <div className="p-6 space-y-4">
-                      <p className="text-xs text-gray-500">
-                          Change your name and email to simulate real-time multi-inspector collaboration across different browser tabs.
-                      </p>
-                      <div>
-                          <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Inspector Name</label>
-                          <input 
-                              type="text"
-                              value={inspectorProfile.name}
-                              onChange={(e) => {
-                                  const updated = { ...inspectorProfile, name: e.target.value };
-                                  setInspectorProfile(updated);
-                                  localStorage.setItem('inspector_profile', JSON.stringify(updated));
-                              }}
-                              className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm text-black"
-                              placeholder="e.g. Inspector John"
-                          />
-                      </div>
-                      <div>
-                          <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Inspector Email</label>
-                          <input 
-                              type="email"
-                              value={inspectorProfile.email}
-                              onChange={(e) => {
-                                  const updated = { ...inspectorProfile, email: e.target.value };
-                                  setInspectorProfile(updated);
-                                  localStorage.setItem('inspector_profile', JSON.stringify(updated));
-                              }}
-                              className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm text-black"
-                              placeholder="e.g. john@company.com"
-                          />
-                      </div>
-                  </div>
-                  <div className="p-4 border-t bg-gray-50 flex justify-end">
-                      <button 
-                          onClick={() => {
-                              setShowProfileModal(false);
-                              if (currentInspectionId && effectiveIsOnline) {
-                                  firebaseService.updatePresence(currentInspectionId, inspectorProfile.userId, inspectorProfile.email, isEditingPresence);
-                              }
-                          }}
-                          className="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg shadow text-xs"
-                      >
-                          Done
-                      </button>
-                  </div>
-              </div>
-          </div>
-      )}
-
-      {editingAsset && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-              <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
-                  <div className="p-4 border-b flex justify-between items-center bg-indigo-50 rounded-t-xl">
-                      <h3 className="text-lg font-bold text-indigo-800 flex items-center gap-2">
-                          <span className="material-icons">edit</span> Edit Asset Details
-                      </h3>
-                      <button onClick={() => setEditingAsset(null)} className="text-gray-500 hover:text-gray-700">
-                          <span className="material-icons">close</span>
-                      </button>
-                  </div>
-                  <div className="p-6 overflow-y-auto flex-1 grid grid-cols-1 md:grid-cols-12 gap-6">
-                      
-                      {/* Left Column: Visual Discovery & Audit History */}
-                      <div className="col-span-1 md:col-span-5 space-y-4">
-                          
-                          {/* Extracted Asset Image Preview Card */}
-                          <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 flex flex-col shadow-xs">
-                              <span className="text-[10px] font-bold uppercase tracking-wider bg-indigo-600 text-white rounded px-2 py-0.5 self-start mb-2 shadow-xs">
-                                  Identified Asset Image
-                              </span>
-                              
-                              {currentRoom.croppedImages[editingAsset.id] ? (
-                                  <div className="relative w-full h-48 bg-white border border-slate-200 rounded-md overflow-hidden flex items-center justify-center group shadow-inner">
-                                      <img 
-                                          src={currentRoom.croppedImages[editingAsset.id]} 
-                                          className="max-w-full max-h-full object-contain cursor-zoom-in hover:scale-[1.03] transition-transform duration-200" 
-                                          alt="Extracted Asset"
-                                          onClick={() => setPreviewImage(currentRoom.croppedImages[editingAsset.id])}
-                                          title="Click to view full screen"
-                                      />
-                                      <div className="absolute bottom-2 right-2 bg-black/60 text-white text-[10px] font-semibold px-2 py-1 rounded flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-                                          <span className="material-icons text-xs">zoom_in</span> Click to zoom
-                                      </div>
-                                  </div>
-                              ) : (
-                                  <div className="border border-dashed border-slate-300 rounded-md py-12 flex flex-col items-center justify-center text-slate-400 bg-white">
-                                      <span className="material-icons text-4xl mb-1">image_not_supported</span>
-                                      <span className="text-xs font-semibold">No cropped image available</span>
-                                  </div>
-                              )}
-
-                              {/* Toggle context image if available */}
-                              {editingAsset.sourceImageIndex !== undefined && currentRoom.images[editingAsset.sourceImageIndex] && (
-                                  <button
-                                      type="button"
-                                      onClick={() => setPreviewImage(currentRoom.images[editingAsset.sourceImageIndex!].dataUrl)}
-                                      className="mt-3 w-full text-xs text-indigo-700 hover:text-indigo-900 font-bold flex items-center justify-center gap-1.5 border border-indigo-100 bg-indigo-50/50 hover:bg-indigo-100/70 py-2 rounded-md transition duration-150 shadow-inner"
-                                  >
-                                      <span className="material-icons text-sm">filter_center_focus</span> View Context/Source Image
-                                  </button>
-                              )}
-                          </div>
-
-                          {/* Governance & Audit History */}
-                          <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs text-gray-500 max-h-36 overflow-y-auto shadow-xs">
-                              <strong className="block mb-1 text-slate-700 font-bold uppercase tracking-wider text-[10px]">Governance & Audit History:</strong>
-                              <ul className="space-y-1 divide-y divide-slate-100">
-                                  {(editingAsset.auditTrail || []).map((log, i) => (
-                                     <li key={i} className="flex gap-2 pt-1.5 first:pt-0">
-                                         <span className="font-mono text-slate-400 shrink-0">{new Date(log.timestamp).toLocaleTimeString()}</span>
-                                         <span className={`font-bold shrink-0 ${log.actor === 'AI' ? 'text-purple-600' : 'text-blue-600'}`}>[{log.actor}]</span>
-                                         <span className="text-gray-700">{log.action}: {log.details}</span>
-                                     </li>
-                                  ))}
-                                  {(!editingAsset.auditTrail || editingAsset.auditTrail.length === 0) && <li className="text-gray-400 italic">No history recorded.</li>}
-                              </ul>
-                          </div>
-
-                          {/* Risk Trajectory */}
-                          {editingAsset.riskHistory && editingAsset.riskHistory.length > 0 && (
-                              <div className="bg-white border border-indigo-100 rounded-lg p-3 shadow-xs">
-                                  <label className="block text-[10px] font-bold text-indigo-800 uppercase mb-2 flex items-center gap-1">
-                                      <span className="material-icons text-sm">timeline</span> Risk Trajectory
-                                  </label>
-                                  <div className="space-y-3 border-l-2 border-indigo-200 ml-2 pl-3 py-0.5 max-h-36 overflow-y-auto">
-                                      {editingAsset.riskHistory.map((history, i) => (
-                                          <div key={i} className="relative">
-                                              <div className={`absolute -left-[17px] top-1 w-2 h-2 rounded-full ring-4 ring-white ${history.newRisk === 'Extreme' ? 'bg-red-500' : history.newRisk === 'High' ? 'bg-orange-500' : history.newRisk === 'Medium' ? 'bg-yellow-400' : 'bg-green-500'}`}></div>
-                                              <div className="text-[9px] text-gray-400 font-mono uppercase tracking-wider">
-                                                  {new Date(history.timestamp).toLocaleString()} • <strong className={history.actor === 'AI' ? 'text-purple-600' : 'text-blue-600'}>{history.actor}</strong>
-                                              </div>
-                                              <div className="text-xs text-gray-700">
-                                                  Changed from <span className="font-medium text-gray-900">{history.previousRisk || 'Initial'}</span> to <span className={`font-bold ${history.newRisk === 'Extreme' ? 'text-red-600' : history.newRisk === 'High' ? 'text-orange-500' : history.newRisk === 'Medium' ? 'text-yellow-600' : 'text-green-600'}`}>{history.newRisk}</span>
-                                              </div>
-                                          </div>
-                                      ))}
-                                  </div>
-                              </div>
-                          )}
-                      </div>
-
-                      {/* Right Column: Editable Metadata Controls */}
-                      <div className="col-span-1 md:col-span-7 space-y-4 border-t md:border-t-0 md:border-l md:pl-6 border-slate-200">
-                          <div>
-                              <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Category</label>
-                              <select 
-                                  value={editingAsset.category}
-                                  onChange={(e) => setEditingAsset({...editingAsset, category: e.target.value})}
-                                  className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white text-sm"
-                              >
-                                  {!ASSET_CATEGORIES.includes(editingAsset.category) && <option value={editingAsset.category}>{editingAsset.category}</option>}
-                                  <option value="">Select Category...</option>
-                                  {ASSET_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
-                              </select>
-                          </div>                           <div>
-                              <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Description</label>
-                              <textarea 
-                                  value={editingAsset.description}
-                                  onChange={(e) => setEditingAsset({...editingAsset, description: e.target.value})}
-                                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm h-20 text-slate-800 bg-white"
-                                  placeholder="Detailed description..."
-                              />
-                          </div>
-
-                          <div className="grid grid-cols-4 gap-3">
-                              <div>
-                                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Condition</label>
-                                  <select 
-                                      value={editingAsset.condition}
-                                      onChange={(e) => setEditingAsset({...editingAsset, condition: e.target.value})}
-                                      className="w-full px-2 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white text-xs text-slate-800"
-                                  >
-                                      {CONDITION_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
-                                  </select>
-                              </div>
-                              <div>
-                                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Risk Rating</label>
-                                  <select 
-                                      value={editingAsset.riskRating || 'Low'}
-                                      onChange={(e) => setEditingAsset({...editingAsset, riskRating: e.target.value})}
-                                      className="w-full px-2 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white text-xs text-slate-800"
-                                  >
-                                      {RISK_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
-                                  </select>
-                              </div>
-                              <div>
-                                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Age (Yrs)</label>
-                                  <input 
-                                      type="text"
-                                      value={editingAsset.age || ''}
-                                      onChange={(e) => setEditingAsset({...editingAsset, age: e.target.value})}
-                                      className="w-full px-2 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-xs text-slate-800 bg-white"
-                                      placeholder="e.g. 15"
-                                  />
-                              </div>
-                              <div>
-                                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Quantity</label>
-                                  <input 
-                                      type="text"
-                                      value={editingAsset.quantity}
-                                      onChange={(e) => setEditingAsset({...editingAsset, quantity: e.target.value})}
-                                      className="w-full px-2 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-xs text-slate-800 bg-white"
-                                  />
-                              </div>
-                          </div>
-
-                          <div>
-                              <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Justification</label>
-                              <textarea 
-                                  value={editingAsset.justification}
-                                  onChange={(e) => setEditingAsset({...editingAsset, justification: e.target.value})}
-                                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm h-16 text-slate-800 bg-white"
-                                  placeholder="Why is it in this condition?"
-                              />
-                          </div>
-                          
-                          <div>
-                              <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Notes (Inspector Observations)</label>
-                              <textarea 
-                                  value={editingAsset.notes || ''}
-                                  onChange={(e) => setEditingAsset({...editingAsset, notes: e.target.value})}
-                                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm h-16 bg-yellow-50 text-slate-800"
-                                  placeholder="Add any additional notes or recommendations..."
-                               />
-                          </div>
-
-                          <div className="grid grid-cols-2 gap-4">
-                              <div>
-                                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Cost ($)</label>
-                                  <input 
-                                      type="text"
-                                      value={editingAsset.cost}
-                                      onChange={(e) => setEditingAsset({...editingAsset, cost: e.target.value})}
-                                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm text-slate-800 bg-white"
-                                  />
-                              </div>
-                              <div>
-                                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">RUL (Years)</label>
-                                  <input 
-                                      type="text"
-                                      value={editingAsset.rul}
-                                      onChange={(e) => setEditingAsset({...editingAsset, rul: e.target.value})}
-                                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm text-slate-800 bg-white"
-                                  />
-                              </div>
-                          </div>
-                      </div>
-                  </div>
-                  <div className="p-4 border-t bg-gray-50 rounded-b-xl flex justify-end gap-2">
-                      <button 
-                          onClick={() => setEditingAsset(null)}
-                          className="px-4 py-2 text-gray-700 font-medium hover:bg-gray-200 rounded-lg"
-                      >
-                          Cancel
-                      </button>
-                      <button 
-                          onClick={saveEditedAsset}
-                          className="px-6 py-2 bg-indigo-600 text-white font-bold rounded-lg hover:bg-indigo-700 shadow-md transform active:scale-95 transition"
-                      >
-                          Save Changes
-                      </button>
-                  </div>
-              </div>
-          </div>
-      )}
-
-      <div className="max-w-7xl mx-auto p-4 md:p-6 min-h-screen flex flex-col">
+  const renderAppViews = () => (
+      <>
           {/* OFFLINE BANNER */}
           {!effectiveIsOnline && (
               <div className="bg-orange-500 text-white p-3 rounded-xl mb-4 flex items-center justify-between shadow-lg animate-fade-in">
@@ -1790,6 +1824,19 @@ function App() {
                           Local DB
                       </div>
                   )}
+
+                  <button
+                      onClick={() => setIsMobileMode(!isMobileMode)}
+                      className={`px-3 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 shadow-sm border ${
+                          isMobileMode
+                              ? 'bg-slate-900 text-white border-slate-700 ring-2 ring-indigo-500'
+                              : 'bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100'
+                      }`}
+                      title={isMobileMode ? "Switch to standard desktop view" : "Switch to mobile handheld simulation mode"}
+                  >
+                      <span className="material-icons text-sm">{isMobileMode ? 'desktop_windows' : 'smartphone'}</span>
+                      <span>{isMobileMode ? 'Desktop View' : 'Mobile View'}</span>
+                  </button>
               </div>
           </header>
 
@@ -1894,6 +1941,17 @@ function App() {
                           >
                               <span className="material-icons text-sm">psychology</span>
                               AI Agent OS
+                          </button>
+                          <button
+                              onClick={() => setAppState(prev => ({ ...prev, view: 'health-dashboard' }))}
+                              className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+                                  appState.view === 'health-dashboard'
+                                      ? 'bg-indigo-600 text-white shadow'
+                                      : 'text-gray-600 hover:bg-slate-50'
+                              }`}
+                          >
+                              <span className="material-icons text-sm">monitor_heart</span>
+                              Health Dashboard
                           </button>
                           <button
                               onClick={() => setAppState(prev => ({ ...prev, view: 'summary' }))}
@@ -2010,9 +2068,142 @@ function App() {
                           handleReset={handleReset}
                       />
                   )}
+
+                  {appState.view === 'health-dashboard' && (
+                      <HealthDashboardView
+                          siteInfo={appState.siteInfo}
+                          rooms={appState.rooms}
+                          onSelectRoom={(roomIndex) => {
+                              setAppState(prev => ({
+                                  ...prev,
+                                  currentRoomIndex: roomIndex,
+                                  view: 'assessment'
+                              }));
+                          }}
+                          onPopulateSampleData={populateSampleBuildingData}
+                          hasEditLock={hasEditLock}
+                      />
+                  )}
               </>
           )}
-      </div>
+      </>
+  );
+
+  return (
+    <div className={`min-h-screen ${isMobileMode ? 'bg-slate-950' : 'bg-gradient-to-br from-[#667eea] to-[#764ba2]'} text-gray-900 pb-20 font-sans`}>
+      {processing && (
+          <div className="fixed inset-0 bg-black/80 z-50 flex flex-col items-center justify-center text-white">
+              <div className="w-12 h-12 border-4 border-white/30 border-t-white rounded-full animate-spin mb-4"></div>
+              <p className="text-xl font-medium">{loadingText}</p>
+          </div>
+      )}
+      
+      {previewImage && (
+          <div 
+              className="fixed inset-0 z-[60] flex items-center justify-center bg-black/95 p-4 animate-fade-in"
+              onClick={() => setPreviewImage(null)}
+          >
+              <div className="relative max-w-full max-h-full">
+                  <img src={previewImage} className="max-w-full max-h-[90vh] rounded shadow-2xl object-contain" alt="Preview" />
+                  <button 
+                      onClick={() => setPreviewImage(null)}
+                      className="absolute -top-12 right-0 text-white hover:text-gray-300 bg-white/10 rounded-full p-2"
+                  >
+                      <span className="material-icons text-3xl">close</span>
+                  </button>
+                  <div className="text-center text-white/50 text-sm mt-2">Click anywhere to close</div>
+              </div>
+          </div>
+      )}
+
+      {showProfileModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+              <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden">
+                  <div className="p-4 border-b flex justify-between items-center bg-indigo-50">
+                      <h3 className="text-lg font-bold text-indigo-800 flex items-center gap-2">
+                          <span className="material-icons">account_circle</span> Customize Inspector Profile
+                      </h3>
+                      <button onClick={() => setShowProfileModal(false)} className="text-gray-500 hover:text-gray-700">
+                          <span className="material-icons">close</span>
+                      </button>
+                  </div>
+                  <div className="p-6 space-y-4">
+                      <p className="text-xs text-gray-500">
+                          Change your name and email to simulate real-time multi-inspector collaboration across different browser tabs.
+                      </p>
+                      <div>
+                          <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Inspector Name</label>
+                          <input 
+                              type="text"
+                              value={inspectorProfile.name}
+                              onChange={(e) => {
+                                  const updated = { ...inspectorProfile, name: e.target.value };
+                                  setInspectorProfile(updated);
+                                  localStorage.setItem('inspector_profile', JSON.stringify(updated));
+                              }}
+                              className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm text-black"
+                              placeholder="e.g. Inspector John"
+                          />
+                      </div>
+                      <div>
+                          <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Inspector Email</label>
+                          <input 
+                              type="email"
+                              value={inspectorProfile.email}
+                              onChange={(e) => {
+                                  const updated = { ...inspectorProfile, email: e.target.value };
+                                  setInspectorProfile(updated);
+                                  localStorage.setItem('inspector_profile', JSON.stringify(updated));
+                              }}
+                              className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm text-black"
+                              placeholder="e.g. john@company.com"
+                          />
+                      </div>
+                  </div>
+                  <div className="p-4 border-t bg-gray-50 flex justify-end">
+                      <button 
+                          onClick={() => {
+                              setShowProfileModal(false);
+                              if (currentInspectionId && effectiveIsOnline) {
+                                  firebaseService.updatePresence(currentInspectionId, inspectorProfile.userId, inspectorProfile.email, isEditingPresence);
+                              }
+                          }}
+                          className="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg shadow text-xs"
+                      >
+                          Done
+                      </button>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {editingAsset && currentRoom && (
+          <EditAssetModal
+              editingAsset={editingAsset}
+              setEditingAsset={setEditingAsset}
+              currentRoom={currentRoom}
+              setPreviewImage={setPreviewImage}
+              saveEditedAsset={saveEditedAsset}
+          />
+      )}
+
+      {isMobileMode ? (
+          <MobileAppFrame
+              onExitMobileMode={() => setIsMobileMode(false)}
+              currentView={appState.view}
+              viewMode={viewMode}
+              onNavigate={(view) => setAppState(prev => ({ ...prev, view: view as any }))}
+              onTogglePortfolio={loadPortfolio}
+          >
+              <div className="w-full p-2 sm:p-4 flex flex-col flex-1">
+                  {renderAppViews()}
+              </div>
+          </MobileAppFrame>
+      ) : (
+          <div className="max-w-7xl mx-auto p-4 md:p-6 min-h-screen flex flex-col">
+              {renderAppViews()}
+          </div>
+      )}
 
       {(viewMode === 'portfolio' || appState.view !== 'welcome') && (
           <ChatBot 

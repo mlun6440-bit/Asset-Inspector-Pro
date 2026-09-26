@@ -150,6 +150,33 @@ export const ChatBot: React.FC<ChatBotProps> = ({ contextData, privacyMode, mode
     scrollToBottom();
   }, [messages, isOpen, liveTranscription]);
 
+  useEffect(() => {
+    return () => {
+      // Ensure camera, audio streams, intervals, and audio contexts are cleanly torn down on unmount
+      if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
+      if (liveSessionRef.current) {
+        try {
+          const { stream, scriptProcessor } = liveSessionRef.current;
+          stream?.getTracks()?.forEach((track: any) => track.stop());
+          scriptProcessor?.disconnect();
+        } catch (e) {
+          console.warn("Error cleaning up live stream", e);
+        }
+        liveSessionRef.current = null;
+      }
+      for (const s of audioSourcesRef.current.values()) {
+        try { s.stop(); } catch (e) {}
+      }
+      audioSourcesRef.current.clear();
+      if (audioContextInRef.current && audioContextInRef.current.state !== 'closed') {
+        try { audioContextInRef.current.close(); } catch(e) {}
+      }
+      if (audioContextOutRef.current && audioContextOutRef.current.state !== 'closed') {
+        try { audioContextOutRef.current.close(); } catch(e) {}
+      }
+    };
+  }, []);
+
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
 

@@ -6,20 +6,42 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
     // Inspections collection rules
     match /inspections/{inspectionId} {
-      // Allows anyone to read or write to inspections.
-      // For higher security, change this to: if request.auth != null;
-      allow read, write: if true;
+      // Allow read for inspection catalog/views
+      allow read: if true;
+
+      // Allow create and update if authenticated or if payload has required inspection fields
+      allow create, update: if isAuthenticated() || (
+        request.resource.data.keys().hasAll(['siteInfo', 'rooms', 'lastUpdated'])
+      );
+
+      // Only authenticated users can delete inspections
+      allow delete: if isAuthenticated();
 
       // Assets subcollection matching
       match /assets/{assetId} {
-        allow read, write: if true;
+        allow read: if true;
+        allow create, update: if isAuthenticated() || (
+          request.resource.data.keys().hasAll(['id', 'category', 'condition'])
+        );
+        allow delete: if isAuthenticated();
       }
 
-      // Presence subcollection matching
+      // Presence subcollection matching for collaboration
       match /presence/{userId} {
-        allow read, write: if true;
+        allow read: if true;
+        allow create, update: if isAuthenticated() || (
+          request.resource.data.keys().hasAll(['userId', 'email', 'lastActive'])
+        );
+        allow delete: if isAuthenticated() || (
+          request.auth != null && request.auth.uid == userId
+        );
       }
     }
   }
