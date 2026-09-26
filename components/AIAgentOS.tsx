@@ -171,6 +171,9 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
       workOrders: []
     };
   });
+  // Latest osState for async handlers, which would otherwise spread the snapshot captured when they started
+  const osStateRef = useRef(osState);
+  osStateRef.current = osState;
 
   // Local state for UI
   const [searchTerm, setSearchTerm] = useState('');
@@ -310,7 +313,8 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
             detectedEquipment: analysis.detectedEquipment
           };
 
-          const updatedDrawings = [newDwg, ...(osState.asBuiltDrawings || [])];
+          const latestOS = osStateRef.current;
+          const updatedDrawings = [newDwg, ...(latestOS.asBuiltDrawings || [])];
           
           // Also seed a memory inside the Second Brain that this drawing was parsed!
           const drawingMemoryText = `As-built blueprint "${newDwg.drawingNo}" (Discipline: ${newDwg.discipline}, Rev: ${newDwg.revision}) successfully loaded. Identified key components: ${analysis.detectedEquipment.join(', ')}.`;
@@ -319,10 +323,10 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
             category: 'site_fact',
             text: drawingMemoryText,
             timestamp: Date.now()
-          }, ...osState.memories];
+          }, ...latestOS.memories];
 
           const updatedOS = {
-            ...osState,
+            ...latestOS,
             asBuiltDrawings: updatedDrawings,
             memories: updatedMemories
           };
@@ -824,6 +828,8 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
 
   // Synchronize OS state changes to main app state and Firestore
   const updateOSState = (newOSState: AgentOSState) => {
+    if (!hasEditLock) return;
+    osStateRef.current = newOSState;
     setOsState(newOSState);
     onUpdateSiteInfo('agentOS', newOSState);
   };
@@ -858,7 +864,7 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
       setCognifyLogs(prev => [...prev, "Normalizing graph topology and saving semantic memory vector space..."]);
       
       const updatedOS = {
-        ...osState,
+        ...osStateRef.current,
         cogneeGraph: graph
       };
       updateOSState(updatedOS);
@@ -2602,6 +2608,7 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
                                   left: node.x,
                                   top: node.y,
                                   transform: 'translate(-50%, -50%)',
+                                  opacity: isDimmed ? 0.4 : 1,
                                 }}
                                 onMouseEnter={() => setHoveredNodeId(node.id)}
                                 onMouseLeave={() => setHoveredNodeId(null)}
@@ -2611,7 +2618,6 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
                                   isTraversed ? 'ring-2 ring-yellow-400 scale-105' :
                                   'hover:scale-105'
                                 }`}
-                                opacity={isDimmed ? '0.4' : '1'}
                               >
                                 {isTraversed && (
                                   <span className="absolute -inset-1 rounded-xl border border-yellow-400 animate-ping opacity-60 pointer-events-none" />

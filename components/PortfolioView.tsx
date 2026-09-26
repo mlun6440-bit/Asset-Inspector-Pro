@@ -163,12 +163,18 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
               onClick={async () => {
                 setSyncingOfflineData(true);
                 setSyncMessage('Manual push triggered...');
-                const synced = await firebaseService.syncPendingQueue((p) => setSyncMessage(p));
-                const remaining = await firebaseService.getPendingQueueCount();
-                setPendingQueueCount(remaining);
-                const fresh = await firebaseService.getAllInspections();
-                setPortfolioData(fresh);
-                setSyncingOfflineData(false);
+                let synced = 0;
+                try {
+                  synced = await firebaseService.syncPendingQueue((p) => setSyncMessage(p));
+                  const remaining = await firebaseService.getPendingQueueCount();
+                  setPendingQueueCount(remaining);
+                  const fresh = await firebaseService.getAllInspections();
+                  setPortfolioData(fresh);
+                } catch (err) {
+                  console.error("Manual sync failed:", err);
+                } finally {
+                  setSyncingOfflineData(false);
+                }
                 if (synced > 0) {
                   setSyncMessage(`Successfully synchronized ${synced} inspections!`);
                   setTimeout(() => setSyncMessage(''), 3500);

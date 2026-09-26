@@ -1,6 +1,6 @@
 
 // Updated Live Sync Configuration
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { SiteInfo, Room, AppState, Asset, ChatMessage, AuditEntry } from './types';
 import { firebaseService } from './services/firebaseService';
 import { detectAssetsWithBoundingBoxes, cropImage, summarizeConversation, analyzeDocument, extractAssetsFromVendorRegister } from './services/geminiService';
@@ -103,6 +103,7 @@ function App() {
       setHasEditLock,
       isEditingPresence,
       setIsEditingPresence,
+      requestControl,
       getAvatarColor,
       getInitials,
   } = usePresenceSession({
@@ -127,13 +128,19 @@ function App() {
   }, []);
 
   // NEW: Automatic Background Queue Sync Side-Effect
+  const autoSyncInFlightRef = useRef(false);
   useEffect(() => {
     const checkAndSync = async () => {
+        // A previous poll is still pushing the queue; don't start a concurrent upload
+        if (autoSyncInFlightRef.current) return;
+        let startedSync = false;
         try {
             const count = await firebaseService.getPendingQueueCount();
             setPendingQueueCount(count);
             
-            if (effectiveIsOnline && count > 0 && !syncingOfflineData) {
+            if (effectiveIsOnline && count > 0 && !autoSyncInFlightRef.current) {
+                autoSyncInFlightRef.current = true;
+                startedSync = true;
                 setSyncingOfflineData(true);
                 setSyncMessage(`Processing ${count} offline updates...`);
                 
@@ -166,7 +173,10 @@ function App() {
             setSyncMessage('Auto sync failed. Retrying.');
             setTimeout(() => setSyncMessage(''), 3500);
         } finally {
-            setSyncingOfflineData(false);
+            if (startedSync) {
+                autoSyncInFlightRef.current = false;
+                setSyncingOfflineData(false);
+            }
             const finalCount = await firebaseService.getPendingQueueCount();
             setPendingQueueCount(finalCount);
         }
@@ -230,10 +240,15 @@ function App() {
 
   const loadPortfolio = async () => {
       setLoading(true);
-      const data = await firebaseService.getAllInspections();
-      setPortfolioData(data);
-      setViewMode('portfolio');
-      setLoading(false);
+      try {
+          const data = await firebaseService.getAllInspections();
+          setPortfolioData(data);
+          setViewMode('portfolio');
+      } catch (e) {
+          console.error("Failed to load portfolio:", e);
+      } finally {
+          setLoading(false);
+      }
   };
 
   const openInspection = (inspection: any) => {
@@ -588,21 +603,24 @@ function App() {
     firebaseService.saveState(updatedSiteInfo, newRooms);
   };
 
-  const updateCurrentRoom = (updates: Partial<Room>) => {
-    if (!hasEditLock) return;
-    let nextRooms: Room[] = [];
-    let siteInfoForSave: SiteInfo = appState.siteInfo;
+  // `force` is for handlers that have just claimed the edit lock in this same render,
+  // where `hasEditLock` is still the stale value
+  const updateCurrentRoom = (updates: Partial<Room>, force = false) => {
+    if (!hasEditLock && !force) return;
+    // The updater may run later (during render) when other updates are queued, so the save
+    // must happen from inside it; the flag keeps StrictMode's double invocation to one save
+    let saved = false;
     setAppState(prev => {
-      nextRooms = [...prev.rooms];
+      const nextRooms = [...prev.rooms];
       nextRooms[prev.currentRoomIndex] = { ...nextRooms[prev.currentRoomIndex], ...updates };
-      siteInfoForSave = prev.siteInfo;
+      if (!saved && nextRooms.length > 0) {
+        saved = true;
+        firebaseService.saveState(prev.siteInfo, nextRooms).catch(err => {
+          console.warn("Background saveState notice:", err);
+        });
+      }
       return { ...prev, rooms: nextRooms };
     });
-    if (nextRooms.length > 0) {
-      firebaseService.saveState(siteInfoForSave, nextRooms).catch(err => {
-        console.warn("Background saveState notice:", err);
-      });
-    }
   };
 
   const createAuditEntry = (action: string, details: string): AuditEntry => ({
@@ -851,7 +869,7 @@ function App() {
 
       if (newImages.length > 0) {
         const updatedImages = [...currentRoom.images, ...newImages];
-        updateCurrentRoom({ images: updatedImages });
+        updateCurrentRoom({ images: updatedImages }, true);
       }
     } catch (err) {
       console.error("Error reading photo upload:", err);
@@ -943,7 +961,7 @@ function App() {
       updateCurrentRoom({ 
           assets: finalAssets,
           croppedImages: newCroppedImages
-      });
+      }, true);
 
     } catch (e) {
       console.error("AI Asset generation error:", e);
@@ -1186,6 +1204,7 @@ function App() {
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 0);
   };
 
   const exportToJSON = () => {
@@ -1209,6 +1228,7 @@ function App() {
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 0);
   };
 
   const exportForRAG = () => {
@@ -1243,6 +1263,7 @@ function App() {
       a.href = url;
       a.download = `${appState.siteInfo.name}_RAG.json`;
       a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
   };
 
   const goToNextPage = async () => {
@@ -1856,12 +1877,7 @@ function App() {
                       </div>
                   </div>
                   <button 
-                      onClick={() => {
-                          setIsEditingPresence(true);
-                          if (currentInspectionId) {
-                              firebaseService.updatePresence(currentInspectionId, inspectorProfile.userId, inspectorProfile.email, true);
-                          }
-                      }}
+                      onClick={requestControl}
                       className="bg-red-600 hover:bg-red-700 text-white font-bold px-4 py-2 rounded-lg text-xs shadow transition transform active:scale-95 flex items-center gap-1.5"
                   >
                       <span className="material-icons text-sm">lock_open</span> Claim Edit Lock
@@ -2016,6 +2032,7 @@ function App() {
                               siteInfo={appState.siteInfo}
                               rooms={appState.rooms}
                               onUpdateSiteInfo={(key, value) => {
+                                  if (!hasEditLock) return;
                                   setAppState(prev => {
                                       const updatedSiteInfo = { ...prev.siteInfo, [key]: value };
                                       firebaseService.saveState(updatedSiteInfo, prev.rooms);
@@ -2034,6 +2051,7 @@ function App() {
                               siteInfo={appState.siteInfo}
                               rooms={appState.rooms}
                               onUpdateSiteInfo={(key, value) => {
+                                  if (!hasEditLock) return;
                                   setAppState(prev => {
                                       const updatedSiteInfo = { ...prev.siteInfo, [key]: value };
                                       firebaseService.saveState(updatedSiteInfo, prev.rooms);
@@ -2041,6 +2059,7 @@ function App() {
                                   });
                               }}
                               onUpdateRooms={(updatedRooms) => {
+                                  if (!hasEditLock) return;
                                   setAppState(prev => {
                                       firebaseService.saveState(prev.siteInfo, updatedRooms);
                                       return { ...prev, rooms: updatedRooms };
@@ -2192,7 +2211,10 @@ function App() {
               onExitMobileMode={() => setIsMobileMode(false)}
               currentView={appState.view}
               viewMode={viewMode}
-              onNavigate={(view) => setAppState(prev => ({ ...prev, view: view as any }))}
+              onNavigate={(view) => {
+                  setViewMode('single');
+                  setAppState(prev => ({ ...prev, view: view as any }));
+              }}
               onTogglePortfolio={loadPortfolio}
           >
               <div className="w-full p-2 sm:p-4 flex flex-col flex-1">

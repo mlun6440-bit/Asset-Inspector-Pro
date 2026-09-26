@@ -65,10 +65,12 @@ export const RoomAssessmentView: React.FC<RoomAssessmentViewProps> = ({
     e.stopPropagation();
     setIsDragging(false);
 
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+    // Drag-and-drop bypasses the input's accept="image/*" filter
+    const imageFiles = Array.from(e.dataTransfer.files || []).filter((f: File) => f.type.startsWith('image/'));
+    if (imageFiles.length > 0) {
       const syntheticEvent = {
         target: {
-          files: e.dataTransfer.files
+          files: imageFiles
         }
       } as unknown as React.ChangeEvent<HTMLInputElement>;
       handleImageUpload(syntheticEvent);

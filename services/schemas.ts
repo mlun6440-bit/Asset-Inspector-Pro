@@ -210,8 +210,11 @@ export function safeParseJson<T>(rawText: string | undefined | null, fallback: T
  * Sanitizes and validates detected assets against strict domain bounds
  */
 export function sanitizeDetectedAssets(rawJson: unknown): Asset[] {
-  const parsed = RawDetectedAssetArraySchema.safeParse(rawJson);
-  const items = parsed.success ? parsed.data : [];
+  // Validate item-by-item so one malformed detection doesn't discard the whole batch
+  const items = (Array.isArray(rawJson) ? rawJson : []).flatMap((raw) => {
+    const parsed = RawDetectedAssetSchema.safeParse(raw);
+    return parsed.success ? [parsed.data] : [];
+  });
 
   return items.map((a) => {
     // Clamp bounding box dimensions between 0 and 1

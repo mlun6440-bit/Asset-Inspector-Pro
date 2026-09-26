@@ -1092,11 +1092,12 @@ export const analyzeCFOFinance = async (
 
     assets.forEach(a => {
       const c = parseFloat(a.cost) || 0;
-      const r = parseFloat(a.rul) || 5;
+      const parsedRul = parseFloat(a.rul);
+      const r = Number.isFinite(parsedRul) ? parsedRul : 5;
       totalCost += c;
       if (r <= 2) immediate += c;
       else if (r <= 5) shortTerm += c;
-      else mediumTerm += c;
+      else if (r <= 10) mediumTerm += c;
 
       if (a.riskRating === 'High' || a.riskRating === 'Extreme') {
         highRiskCost += c;
@@ -1127,7 +1128,7 @@ export const analyzeCFOFinance = async (
         { year: '2030', baseAmount: shortTerm * 0.4, stressAmount: shortTerm * 0.5, inflationAmount: shortTerm * 0.49 },
         { year: '2031', baseAmount: mediumTerm * 0.2, stressAmount: mediumTerm * 0.3, inflationAmount: mediumTerm * 0.26 }
       ],
-      criticalAssets: assets.slice(0, 5).map(a => {
+      criticalAssets: assets.map(a => {
         const costVal = parseFloat(a.cost) || 0;
         const multiplier = a.riskRating === 'Extreme' ? 10 : a.riskRating === 'High' ? 6 : a.riskRating === 'Medium' ? 3 : 1;
         return {
@@ -1139,7 +1140,7 @@ export const analyzeCFOFinance = async (
           riskRating: a.riskRating || 'Medium',
           score: Math.round((costVal * multiplier) / 1000)
         };
-      }),
+      }).sort((x, y) => y.score - x.score).slice(0, 5),
       alerts: immediate > 0 ? [
         { id: 'alert-1', type: 'critical', title: 'Lifecycle CAPEX Alert', message: `Immediate capital expenditure of $${immediate.toLocaleString()} required for assets with remaining life <= 2 years.` }
       ] : []
@@ -1331,7 +1332,6 @@ export const analyzeWorkOrdersForCapexOrRework = async (
   customRules: string[] = [],
   memories: string[] = []
 ): Promise<WorkOrderAnalysisResult> => {
-  if (!apiKey) throw new Error("API Key not found");
 
   const prompt = `
     You are Jarvis, an advanced AI Asset Operations and CFO Advisory Engine.
@@ -1372,6 +1372,8 @@ export const analyzeWorkOrdersForCapexOrRework = async (
   `;
 
   try {
+    // Throwing here routes to the deterministic fallback in the catch below
+    if (!apiKey) throw new Error("API Key not found");
     const response = await ai.models.generateContent({
       model: 'gemini-3.7-flash',
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
@@ -1688,12 +1690,9 @@ export const queryCogneeGraph = async (
   query: string,
   graph: { nodes: any[], edges: any[] }
 ): Promise<{ answer: string, traversedNodes: string[], traversedEdges: string[] }> => {
+  // Callers fall back to the deterministic graph engine when this throws
   if (!apiKey) {
-    return {
-      answer: "Gemini API key is required to perform semantic graph queries. Please add it to your environment.",
-      traversedNodes: [],
-      traversedEdges: []
-    };
+    throw new Error("Gemini API key is required to perform semantic graph queries.");
   }
 
   try {
@@ -1703,7 +1702,7 @@ Nodes:
 ${JSON.stringify(graph.nodes.map(n => ({ id: n.id, label: n.label, type: n.type, desc: n.description })))}
 
 Edges (Relationships):
-${JSON.stringify(graph.edges.map(e => ({ source: e.source, target: e.target, type: e.type, desc: e.description })))}
+${JSON.stringify(graph.edges.map(e => ({ id: e.id, source: e.source, target: e.target, type: e.type, desc: e.description })))}
 
 The user asks this graph-grounded query:
 "${query}"
@@ -1747,12 +1746,9 @@ Instructions:
     }
   } catch (err) {
     console.error("Error in querying Cognee graph:", err);
+    throw err;
   }
 
-  return {
-    answer: "Unable to complete semantic graph traversal. Please verify your connection and Gemini API key configuration.",
-    traversedNodes: [],
-    traversedEdges: []
-  };
+  throw new Error("Empty response from semantic graph traversal.");
 };
 

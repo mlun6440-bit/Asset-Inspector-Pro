@@ -202,9 +202,9 @@ export const MobileAppFrame: React.FC<MobileAppFrameProps> = ({
                   <span>Inspect</span>
                 </button>
                 <button
-                  onClick={() => onNavigate('drawings')}
+                  onClick={() => onNavigate('reconstruction')}
                   className={`flex flex-col items-center py-1 px-2 rounded-lg transition ${
-                    currentView === 'drawings' && viewMode === 'single' ? 'text-indigo-600 bg-indigo-50' : 'hover:text-indigo-600'
+                    currentView === 'reconstruction' && viewMode === 'single' ? 'text-indigo-600 bg-indigo-50' : 'hover:text-indigo-600'
                   }`}
                 >
                   <span className="material-icons text-base">architecture</span>

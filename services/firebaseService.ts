@@ -416,10 +416,15 @@ export class FirebaseService {
                 const ext = docItem.mimeType === 'application/pdf' ? 'pdf' : 'jpg';
                 const cloudPath = `inspections/${inspectionId}/documents/${docItem.id}.${ext}`;
                 const uploadedUrl = await this.uploadImage(docItem.dataUrl, cloudPath);
-                // If upload failed, compress thumbnail for document
-                docItem.dataUrl = uploadedUrl.startsWith('data:') 
-                    ? await this.createFirestoreThumbnail(uploadedUrl, 400, 0.5) 
-                    : uploadedUrl;
+                // If upload failed, compress thumbnail for image documents; drop non-image
+                // payloads (e.g. PDFs) so the Firestore document stays under the 1MB limit
+                if (!uploadedUrl.startsWith('data:')) {
+                    docItem.dataUrl = uploadedUrl;
+                } else if (uploadedUrl.startsWith('data:image')) {
+                    docItem.dataUrl = await this.createFirestoreThumbnail(uploadedUrl, 400, 0.5);
+                } else {
+                    delete docItem.dataUrl;
+                }
             }
         }
     }
@@ -459,6 +464,7 @@ export class FirebaseService {
         }, { merge: true });
     } catch (e: any) {
         console.warn("Firestore document write deferred:", e.message || e);
+        throw e;
     }
 
     try {
@@ -494,6 +500,7 @@ export class FirebaseService {
         }
     } catch (batchErr: any) {
         console.warn("Firestore sub-assets batch write deferred:", batchErr.message || batchErr);
+        throw batchErr;
     }
     
     console.log(`✅ Cloud synchronization processed for: inspections/${inspectionId}`);
@@ -614,6 +621,10 @@ export class FirebaseService {
     if (isConfigured && db && result.siteInfo?.name && navigator.onLine) {
         const inspectionId = result.siteInfo.name.trim().replace(/\s+/g, '_').toLowerCase();
         try {
+            // Local edits still waiting to sync are newer than the cloud copy; don't clobber them
+            const pendingQueue = await get('pending_sync_queue') || {};
+            if (pendingQueue[inspectionId]) return result;
+
             const docRef = doc(db, "inspections", inspectionId);
             const docSnap = await getDoc(docRef);
 
@@ -668,14 +679,15 @@ export class FirebaseService {
       } catch (e: any) {
           console.error("Error fetching inspections from Firestore:", e.message);
           if (e.code === 'permission-denied' || e.message?.toLowerCase().includes('permission') || e.message?.toLowerCase().includes('unauthorized')) {
-              handleFirestoreError(e, OperationType.GET, "inspections");
+              // handleFirestoreError logs diagnostic info then throws; fall back to offline data instead
+              try { handleFirestoreError(e, OperationType.GET, "inspections"); } catch { /* logged */ }
           }
           return offlineList;
       }
   }
 
   // Real-time Presence API for Multi-Inspector collaboration
-  async updatePresence(inspectionId: string, userId: string, email: string, isEditing: boolean): Promise<void> {
+  async updatePresence(inspectionId: string, userId: string, email: string, isEditing: boolean, editClaimedAt: number = 0): Promise<void> {
     if (!isConfigured || !db) return;
     const docRef = doc(db, "inspections", inspectionId, "presence", userId);
     try {
@@ -684,6 +696,7 @@ export class FirebaseService {
             email,
             lastActive: new Date().toISOString(),
             isEditing,
+            editClaimedAt,
             device: navigator.userAgent
         }, { merge: true });
     } catch (e) {

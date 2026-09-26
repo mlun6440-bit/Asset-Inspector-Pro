@@ -319,11 +319,14 @@ export function queryKnowledgeGraph(
   const traversedNodes = new Set<string>();
   const traversedEdges = new Set<string>();
 
-  // 1. Identify matched entity nodes
+  // 1. Identify matched entity nodes: the node's label/category appears in the question,
+  // or the whole question appears in the node's text
   const matchedNodes = graph.nodes.filter((node) => {
-    const labelMatch = node.label.toLowerCase().includes(queryLower);
+    const label = node.label.toLowerCase();
+    const category = String(node.properties?.category || '').toLowerCase();
+    const labelMatch = label.includes(queryLower) || (label.length >= 3 && queryLower.includes(label));
     const descMatch = (node.description || '').toLowerCase().includes(queryLower);
-    const categoryMatch = (node.properties?.category || '').toLowerCase().includes(queryLower);
+    const categoryMatch = category.includes(queryLower) || (category.length >= 3 && queryLower.includes(category));
     return labelMatch || descMatch || categoryMatch;
   });
 

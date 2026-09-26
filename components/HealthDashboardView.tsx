@@ -134,9 +134,24 @@ export const HealthDashboardView: React.FC<HealthDashboardViewProps> = ({
       assets.forEach((a) => {
         const cat = (a.category || '').toLowerCase();
         let matchedSys: typeof SYSTEM_CATEGORIES[number] = 'Building Fabric';
-        if (cat.includes('electrical') || cat.includes('lighting') || cat.includes('switchboard') || cat.includes('power')) {
+        // Registered categories are "Group,Item": classify by the group first so items like
+        // "Facade" or "Access Control Readers" aren't caught by loose substring checks
+        const group = cat.includes(',') ? cat.split(',')[0] : '';
+        if (group.startsWith('building')) {
+          matchedSys = 'Building Fabric';
+        } else if (group.startsWith('electrical')) {
           matchedSys = 'Electrical';
-        } else if (cat.includes('hvac') || cat.includes('ac') || cat.includes('ventilation') || cat.includes('chiller') || cat.includes('fan')) {
+        } else if (group.startsWith('hvac')) {
+          matchedSys = 'HVAC & Mech';
+        } else if (group.startsWith('plumbing')) {
+          matchedSys = 'Plumbing';
+        } else if (group.startsWith('fire')) {
+          matchedSys = 'Fire & Safety';
+        } else if (group.startsWith('security') || group.startsWith('grounds')) {
+          matchedSys = 'Security & Grounds';
+        } else if (cat.includes('electrical') || cat.includes('lighting') || cat.includes('switchboard') || cat.includes('power')) {
+          matchedSys = 'Electrical';
+        } else if (cat.includes('hvac') || /\bac\b/.test(cat) || cat.includes('ventilation') || cat.includes('chiller') || cat.includes('fan')) {
           matchedSys = 'HVAC & Mech';
         } else if (cat.includes('plumb') || cat.includes('water') || cat.includes('drain') || cat.includes('sink') || cat.includes('toilet')) {
           matchedSys = 'Plumbing';

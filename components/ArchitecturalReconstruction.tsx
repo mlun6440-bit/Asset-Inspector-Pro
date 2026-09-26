@@ -343,14 +343,17 @@ export const ArchitecturalReconstruction: React.FC<ArchitecturalReconstructionPr
       return `<line x1="${w.x1 * gridSpacing}" y1="${w.y1 * gridSpacing}" x2="${w.x2 * gridSpacing}" y2="${w.y2 * gridSpacing}" stroke="${stroke}" stroke-width="${strokeWidth}" ${strokeDash}/>`;
     }).join('\n');
 
+    const escapeXml = (value: unknown) => String(value ?? '')
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
     // Draw assets
     const svgAssets = recon.assets.map(a => {
       const px = a.x * gridSpacing;
       const py = a.y * gridSpacing;
       return `<g>
         <circle cx="${px}" cy="${py}" r="8" fill="#4f46e5" stroke="#ffffff" stroke-width="1.5"/>
-        <text x="${px}" y="${py + 3}" font-family="sans-serif" font-size="7" font-weight="bold" fill="#ffffff" text-anchor="middle">${a.category.charAt(0)}</text>
-        <text x="${px}" y="${py - 12}" font-family="sans-serif" font-size="6" font-weight="bold" fill="#1e293b" text-anchor="middle">${a.assetName}</text>
+        <text x="${px}" y="${py + 3}" font-family="sans-serif" font-size="7" font-weight="bold" fill="#ffffff" text-anchor="middle">${escapeXml(a.category.charAt(0))}</text>
+        <text x="${px}" y="${py - 12}" font-family="sans-serif" font-size="6" font-weight="bold" fill="#1e293b" text-anchor="middle">${escapeXml(a.assetName)}</text>
       </g>`;
     }).join('\n');
 
