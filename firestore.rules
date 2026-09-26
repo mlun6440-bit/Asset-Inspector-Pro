@@ -1,48 +1,22 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Global default-deny catch-all
+    // Assigned only through the trusted Firebase Admin SDK. Anonymous sign-in
+    // and client-supplied inspection/profile fields never grant team access.
+    function isInspector() {
+      return request.auth != null && request.auth.token.assetInspector == true;
+    }
+    match /inspections/{inspectionId} {
+      allow read, write: if isInspector();
+      match /assets/{assetId} {
+        allow read, write: if isInspector();
+      }
+      match /presence/{userId} {
+        allow read, write: if isInspector();
+      }
+    }
     match /{document=**} {
       allow read, write: if false;
-    }
-
-    // Helper functions
-    function isAuthenticated() {
-      return request.auth != null;
-    }
-
-    // Inspections collection rules
-    match /inspections/{inspectionId} {
-      // Allow read for inspection catalog/views
-      allow read: if true;
-
-      // Allow create and update if authenticated or if payload has required inspection fields
-      allow create, update: if isAuthenticated() || (
-        request.resource.data.keys().hasAll(['siteInfo', 'rooms', 'lastUpdated'])
-      );
-
-      // Only authenticated users can delete inspections
-      allow delete: if isAuthenticated();
-
-      // Assets subcollection matching
-      match /assets/{assetId} {
-        allow read: if true;
-        allow create, update: if isAuthenticated() || (
-          request.resource.data.keys().hasAll(['id', 'category', 'condition'])
-        );
-        allow delete: if isAuthenticated();
-      }
-
-      // Presence subcollection matching for collaboration
-      match /presence/{userId} {
-        allow read: if true;
-        allow create, update: if isAuthenticated() || (
-          request.resource.data.keys().hasAll(['userId', 'email', 'lastActive'])
-        );
-        allow delete: if isAuthenticated() || (
-          request.auth != null && request.auth.uid == userId
-        );
-      }
     }
   }
 }

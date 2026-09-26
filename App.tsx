@@ -5,6 +5,7 @@ import { SiteInfo, Room, AppState, Asset, ChatMessage, AuditEntry } from './type
 import { firebaseService } from './services/firebaseService';
 import { detectAssetsWithBoundingBoxes, cropImage, summarizeConversation, analyzeDocument, extractAssetsFromVendorRegister } from './services/geminiService';
 import { usePresenceSession } from './hooks/usePresenceSession';
+import { useRoomAutosave } from './hooks/useRoomAutosave';
 import { ChatBot } from './components/ChatBot';
 import { ArchitecturalReconstruction } from './components/ArchitecturalReconstruction';
 import { WelcomeView } from './components/WelcomeView';
@@ -588,21 +589,18 @@ function App() {
     firebaseService.saveState(updatedSiteInfo, newRooms);
   };
 
+  const requestRoomSave = useRoomAutosave(appState.siteInfo, appState.rooms);
+
   const updateCurrentRoom = (updates: Partial<Room>) => {
     if (!hasEditLock) return;
-    let nextRooms: Room[] = [];
-    let siteInfoForSave: SiteInfo = appState.siteInfo;
     setAppState(prev => {
-      nextRooms = [...prev.rooms];
-      nextRooms[prev.currentRoomIndex] = { ...nextRooms[prev.currentRoomIndex], ...updates };
-      siteInfoForSave = prev.siteInfo;
-      return { ...prev, rooms: nextRooms };
+      if (!prev.rooms[prev.currentRoomIndex]) return prev;
+      const rooms = [...prev.rooms];
+      rooms[prev.currentRoomIndex] = { ...rooms[prev.currentRoomIndex], ...updates };
+      return { ...prev, rooms };
     });
-    if (nextRooms.length > 0) {
-      firebaseService.saveState(siteInfoForSave, nextRooms).catch(err => {
-        console.warn("Background saveState notice:", err);
-      });
-    }
+    // React batches this with the room update; persistence observes committed state.
+    requestRoomSave();
   };
 
   const createAuditEntry = (action: string, details: string): AuditEntry => ({
@@ -947,6 +945,7 @@ function App() {
 
     } catch (e) {
       console.error("AI Asset generation error:", e);
+      alert(e instanceof Error ? e.message : "Asset detection failed. Existing assets are unchanged; please retry.");
     } finally {
       setProcessing(false);
       setLoadingText('');
@@ -2219,3 +2218,4 @@ function App() {
 }
 
 export default App;
+
