@@ -52,6 +52,12 @@ export interface Room {
   id: string;
   buildingName: string;
   roomName: string;
+  /** Optional to preserve compatibility with previously saved inspections. */
+  siteExternalId?: string;
+  buildingExternalId?: string;
+  floorLevel?: string;
+  roomCode?: string;
+  fulcrumRoomId?: string;
   images: AppImage[];
   assets: Asset[];
   croppedImages: Record<string, string>;
