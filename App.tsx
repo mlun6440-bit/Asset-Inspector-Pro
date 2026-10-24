@@ -942,13 +942,19 @@ function App() {
         }
       }
 
-      updateCurrentRoom({ 
+      updateCurrentRoom({
           assets: finalAssets,
           croppedImages: newCroppedImages
       });
 
+      if (detectedAssets.length === 0) {
+          alert("AI found no assets in these photos. Add assets manually if any are present.");
+      }
+
     } catch (e) {
       console.error("AI Asset generation error:", e);
+      const reason = e instanceof Error ? e.message : String(e);
+      alert(`${reason}\n\nNo assets were added. You can retry or add assets manually.`);
     } finally {
       setProcessing(false);
       setLoadingText('');
