@@ -6,6 +6,7 @@ import { firebaseService } from './services/firebaseService';
 import { detectAssetsWithBoundingBoxes, cropImage, summarizeConversation, analyzeDocument, extractAssetsFromVendorRegister } from './services/geminiService';
 import { usePresenceSession } from './hooks/usePresenceSession';
 import { useRoomAutosave } from './hooks/useRoomAutosave';
+import { ASSET_EXPORT_HEADERS, assetExportRow, csvCell, reviewStatus } from './services/assetExport';
 import { ChatBot } from './components/ChatBot';
 import { ArchitecturalReconstruction } from './components/ArchitecturalReconstruction';
 import { WelcomeView } from './components/WelcomeView';
@@ -479,7 +480,7 @@ function App() {
                               category: a.category || 'Other',
                               description: a.description || 'Unknown Asset',
                               condition: a.condition || 'Unknown',
-                              riskRating: a.riskRating || 'Low',
+                              riskRating: a.riskRating || '',
                               auditTrail: [],
                               justification: a.justification || 'Imported from vendor register',
                               quantity: a.quantity || 1,
@@ -1038,25 +1039,11 @@ function App() {
     appState.rooms.forEach(room => {
         if (room.assets.length === 0) return;
         const data = [
-            ['Category', 'Description', 'Condition', 'Risk', 'Age (yrs)', 'Justification', 'Notes', 'Qty', 'Cost ($)', 'RUL (yrs)', 'Verified', 'Last Action'],
+            [...ASSET_EXPORT_HEADERS, 'Last Action'],
             ...room.assets.map(a => {
                 const lastLog = a.auditTrail && a.auditTrail.length > 0 ? a.auditTrail[a.auditTrail.length - 1] : null;
                 const lastAction = lastLog ? `${lastLog.action} (${lastLog.actor})` : 'N/A';
-                const qtyVal = isBuildingFabric(a.category) ? 'N/A' : a.quantity;
-                return [
-                    a.category, 
-                    a.description, 
-                    a.condition, 
-                    a.riskRating || 'Low',
-                    a.age || '',
-                    a.justification, 
-                    a.notes || '', 
-                    qtyVal, 
-                    a.cost, 
-                    a.rul, 
-                    a.verified ? 'Yes' : 'No',
-                    lastAction
-                ];
+                return [...assetExportRow(a, isBuildingFabric(a.category)), lastAction];
             })
         ];
         const ws = XLSX.utils.aoa_to_sheet(data);
@@ -1153,19 +1140,19 @@ function App() {
 
               (doc as any).autoTable({
                   startY: startY,
-                  head: [['Category', 'Description', 'Condition', 'Risk', 'Age', 'Justification', 'Notes', 'Qty', 'Cost', 'RUL', 'Verified']],
+                  head: [['Category', 'Description', 'Condition', 'Risk', 'Age', 'Justification', 'Notes', 'Qty', 'Cost', 'RUL', 'Review']],
                   body: room.assets.map(a => [
                       a.category,
                       a.description.substring(0, 40),
-                      a.condition,
-                      a.riskRating || 'Low',
+                      a.condition || '',
+                      a.riskRating || '',
                       a.age || '',
-                      a.justification.substring(0, 40),
+                      (a.justification || '').substring(0, 40),
                       a.notes ? a.notes.substring(0, 40) : '',
                       isBuildingFabric(a.category) ? 'N/A' : a.quantity,
-                      `$${a.cost}`,
-                      `${a.rul} yr`,
-                      a.verified ? 'Yes' : 'No'
+                      a.cost ? `$${a.cost}` : '',
+                      a.rul ? `${a.rul} yr` : '',
+                      reviewStatus(a)
                   ]),
                   theme: 'grid',
                   headStyles: { fillColor: [102, 126, 234] },
@@ -1193,26 +1180,12 @@ function App() {
   };
 
   const exportToCSV = () => {
-      let csvContent = "Building Name,Room Name,Category,Description,Condition,Risk Rating,Age,Justification,Notes,Quantity,Cost,RUL,Verified\n";
+      let csvContent = ['Building Name', 'Room ID', 'Room Name', ...ASSET_EXPORT_HEADERS].map(csvCell).join(",") + "\n";
       
       appState.rooms.forEach(room => {
           room.assets.forEach(a => {
-              const qtyVal = isBuildingFabric(a.category) ? "N/A" : a.quantity;
-              const row = [
-                  appState.siteInfo.name,
-                  room.roomName,
-                  a.category,
-                  (a.description || '').replace(/,/g, ';'),
-                  a.condition,
-                  a.riskRating || 'Low',
-                  a.age || '',
-                  (a.justification || '').replace(/,/g, ';'),
-                  (a.notes || '').replace(/,/g, ';'),
-                  qtyVal,
-                  a.cost,
-                  a.rul,
-                  a.verified ? "Yes" : "No"
-              ].map(v => `"${v}"`).join(",");
+              const row = [appState.siteInfo.name, room.id, room.roomName, ...assetExportRow(a, isBuildingFabric(a.category))]
+                  .map(csvCell).join(",");
               csvContent += row + "\n";
           });
       });
@@ -1233,10 +1206,12 @@ function App() {
           site: appState.siteInfo,
           lastUpdated: new Date().toISOString(),
           rooms: appState.rooms.map(room => ({
+              id: room.id,
               roomName: room.roomName,
               assets: room.assets.map(a => ({
                   ...a,
-                  quantity: isBuildingFabric(a.category) ? 'N/A' : a.quantity
+                  quantity: isBuildingFabric(a.category) ? 'N/A' : a.quantity,
+                  reviewStatus: reviewStatus(a)
               }))
           }))
       };
@@ -1256,7 +1231,7 @@ function App() {
       const data = appState.rooms.flatMap(room => 
           room.assets.map(asset => ({
               id: asset.id,
-              content: `${appState.siteInfo.name}, ${room.roomName}: ${asset.category} - ${asset.description}. Condition: ${asset.condition}. Risk: ${asset.riskRating || 'Low'}. Age: ${asset.age || 'Unknown'}. Justification: ${asset.justification}. Notes: ${asset.notes}. Quantity: ${isBuildingFabric(asset.category) ? 'N/A' : asset.quantity}`,
+              content: `${appState.siteInfo.name}, ${room.roomName}: ${asset.category} - ${asset.description}. Condition: ${asset.condition}. Risk: ${asset.riskRating || 'Not assessed'}. Age: ${asset.age || 'Unknown'}. Justification: ${asset.justification}. Notes: ${asset.notes}. Quantity: ${isBuildingFabric(asset.category) ? 'N/A' : asset.quantity}`,
               metadata: { building: appState.siteInfo.name, room: room.roomName, category: asset.category, cost: asset.cost, condition: asset.condition, risk: asset.riskRating, age: asset.age, auditLog: asset.auditTrail }
           }))
       );

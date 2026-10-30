@@ -166,15 +166,17 @@ export const RawDetectedAssetSchema = z.object({
   id: z.string().optional(),
   category: z.string().default('General Building'),
   description: z.string().default('Asset detected'),
-  condition: z.string().default('Average'),
-  riskRating: z.string().default('Low'),
+  // Evidence fields have no defaults: a value the model didn't give stays blank for the
+  // inspector to fill rather than being invented (see AGENTS.md "Never Fabricate Register Data").
+  condition: z.string().optional(),
+  riskRating: z.string().optional(),
   justification: z.string().default('Inspected via AI vision'),
   quantity: z.union([z.string(), z.number()]).default('1'),
-  cost: z.union([z.string(), z.number()]).default(0),
-  age: z.union([z.string(), z.number()]).default(0),
-  rul: z.union([z.string(), z.number()]).default(10),
+  cost: z.union([z.string(), z.number()]).optional(),
+  age: z.union([z.string(), z.number()]).optional(),
+  rul: z.union([z.string(), z.number()]).optional(),
   notes: z.string().optional().default(''),
-  sourceImageIndex: z.number().optional().default(0),
+  sourceImageIndex: z.number().optional(),
   appearsInImageIndices: z.array(z.number()).optional(),
   boundingBox: z.object({
     x: z.number().default(0),
@@ -238,18 +240,22 @@ export function sanitizeDetectedAssets(rawJson: unknown, existingAssetIds: Reado
     const id = isKnownAsset ? candidateId : crypto.randomUUID();
     claimedIds.add(id);
 
+    const missingEvidence = (['condition', 'riskRating', 'cost', 'age', 'rul'] as const)
+      .filter((field) => a[field] === undefined || a[field] === null || String(a[field]).trim() === '');
+    const asText = (value: string | number | undefined) => (value === undefined || value === null ? '' : String(value));
+
     return {
       id,
       name: `${a.category} - ${desc.substring(0, 30)}...`,
       category: a.category,
       description: desc,
-      condition: a.condition || 'Average',
-      riskRating: a.riskRating || 'Low',
+      condition: a.condition || '',
+      riskRating: a.riskRating || '',
       justification: a.justification || 'Visual inspection recorded.',
       quantity: String(a.quantity ?? '1'),
-      cost: String(a.cost ?? '0'),
-      age: String(a.age ?? '0'),
-      rul: String(a.rul ?? '10'),
+      cost: asText(a.cost),
+      age: asText(a.age),
+      rul: asText(a.rul),
       notes: a.notes || '',
       verified: false,
       aiDetected: true,
@@ -260,7 +266,9 @@ export function sanitizeDetectedAssets(rawJson: unknown, existingAssetIds: Reado
           timestamp: Date.now(),
           actor: 'AI' as const,
           action: 'CREATED',
-          details: 'Detected and validated via Gemini Vision with strict schema.',
+          details: missingEvidence.length > 0
+            ? `Detected via Gemini Vision. AI gave no value for: ${missingEvidence.join(', ')} — needs inspector review.`
+            : 'Detected and validated via Gemini Vision with strict schema.',
         },
       ],
     };

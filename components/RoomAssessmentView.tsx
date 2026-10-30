@@ -433,7 +433,7 @@ export const RoomAssessmentView: React.FC<RoomAssessmentViewProps> = ({
                     </td>
                     <td className="px-4 py-3">
                       <select
-                        value={asset.condition}
+                        value={asset.condition || ''}
                         onChange={(e) => updateAsset(asset.id, 'condition', e.target.value)}
                         className={`rounded px-2 py-1 text-xs font-bold focus:outline-none ${
                           asset.condition === 'Good' || asset.condition === 'Excellent' ? 'bg-green-100 text-green-800' :
@@ -441,13 +441,14 @@ export const RoomAssessmentView: React.FC<RoomAssessmentViewProps> = ({
                           'bg-red-100 text-red-800'
                         }`}
                       >
+                        <option value="" disabled>Not assessed</option>
                         {CONDITION_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
                       </select>
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-1 group/risk">
                         <select
-                          value={asset.riskRating || 'Low'}
+                          value={asset.riskRating || ''}
                           onChange={(e) => updateAsset(asset.id, 'riskRating', e.target.value)}
                           className={`rounded px-2 py-1 text-xs font-bold border-0 cursor-pointer focus:outline-none ${
                             asset.riskRating === 'Extreme' ? 'bg-red-600 text-white' :
@@ -456,6 +457,7 @@ export const RoomAssessmentView: React.FC<RoomAssessmentViewProps> = ({
                             'bg-green-100 text-green-800'
                           }`}
                         >
+                          <option value="" disabled>Not assessed</option>
                           {RISK_OPTIONS.map(r => <option key={r} value={r}>{r}</option>)}
                         </select>
                         {asset.riskHistory && asset.riskHistory.length > 0 && (

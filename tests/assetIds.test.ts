@@ -46,3 +46,11 @@ describe('removing a room photo keeps assets pointing at their own photo', () =>
     expect(removeRoomImage(room, 'zzz')).toEqual({ images: room.images, assets: room.assets });
   });
 });
+
+describe('AI evidence the model omitted is left blank for review, not invented', () => {
+  it('does not default condition, risk, cost, age or RUL', () => {
+    const [asset] = sanitizeDetectedAssets([{ category: 'HVAC & Refrigeration,Split AC', description: 'Wall unit' }]);
+    expect(asset).toMatchObject({ condition: '', riskRating: '', cost: '', age: '', rul: '', sourceImageIndex: undefined });
+    expect(asset.auditTrail[0].details).toMatch(/no value for: condition, riskRating, cost, age, rul/);
+  });
+});
