@@ -10,6 +10,7 @@ import { ArchitecturalReconstruction } from './components/ArchitecturalReconstru
 import { WelcomeView } from './components/WelcomeView';
 import { PortfolioView } from './components/PortfolioView';
 import { RoomAssessmentView } from './components/RoomAssessmentView';
+import { SmartRoomFinder } from './components/SmartRoomFinder';
 import { AssessmentSummaryView } from './components/AssessmentSummaryView';
 import { AIAgentOS } from './components/AIAgentOS';
 import { HealthDashboardView } from './components/HealthDashboardView';
@@ -28,6 +29,7 @@ import {
 
 function App() {
   const [loading, setLoading] = useState(true);
+  const [showSmartRoomFinder, setShowSmartRoomFinder] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [loadingText, setLoadingText] = useState('');
   const [isOnline, setIsOnline] = useState(navigator.onLine);
@@ -2003,6 +2005,19 @@ function App() {
                       />
                   )}
 
+                  {appState.view === 'assessment' && currentRoom && (
+                      <div className="mx-auto max-w-7xl px-4 pb-4">
+                        <button type="button" onClick={() => setShowSmartRoomFinder(true)} className="rounded-xl bg-indigo-600 px-5 py-3 font-semibold text-white shadow hover:bg-indigo-700">Identify This Room</button>
+                      </div>
+                  )}
+                  {showSmartRoomFinder && appState.rooms.length > 0 && (
+                      <SmartRoomFinder rooms={appState.rooms}
+                        onClose={() => setShowSmartRoomFinder(false)}
+                        onSelect={(index) => {
+                          setAppState(prev => ({ ...prev, view: 'assessment', currentRoomIndex: index }));
+                          setShowSmartRoomFinder(false);
+                        }} />
+                  )}
                   {appState.view === 'assessment' && currentRoom && (
                       <RoomAssessmentView
                           currentRoomIndex={appState.currentRoomIndex}
