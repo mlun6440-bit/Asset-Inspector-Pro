@@ -2,6 +2,7 @@ import React, { useRef, useState } from 'react';
 import { Camera, ImagePlus, Trash2, ZoomIn, Sparkles, UploadCloud, FileImage, ShieldAlert } from 'lucide-react';
 import { Room, Asset } from '../types';
 import { ASSET_CATEGORIES, CONDITION_OPTIONS, RISK_OPTIONS, RISK_COLORS } from '../constants';
+import { removeRoomImage } from '../services/roomImages';
 
 interface RoomAssessmentViewProps {
   currentRoomIndex: number;
@@ -211,7 +212,7 @@ export const RoomAssessmentView: React.FC<RoomAssessmentViewProps> = ({
                 </button>
                 <button 
                   type="button"
-                  onClick={() => updateCurrentRoom({ images: currentRoom.images.filter(i => i.id !== img.id) })}
+                  onClick={() => updateCurrentRoom(removeRoomImage(currentRoom, img.id))}
                   className="p-1.5 bg-red-600 text-white rounded-full hover:bg-red-700 shadow transition"
                   title="Remove image"
                 >

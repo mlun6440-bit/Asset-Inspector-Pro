@@ -207,9 +207,14 @@ export function safeParseJson<T>(rawText: string | undefined | null, fallback: T
 }
 
 /**
- * Sanitizes and validates detected assets against strict domain bounds
+ * Sanitizes and validates detected assets against strict domain bounds.
+ *
+ * A model-supplied `id` is kept only when it matches one of `existingAssetIds` (a re-inspection
+ * of a known asset), and only once per batch. Any other id gets a fresh UUID, so the model can
+ * never mint an ID that collides with an asset elsewhere in the register.
  */
-export function sanitizeDetectedAssets(rawJson: unknown): Asset[] {
+export function sanitizeDetectedAssets(rawJson: unknown, existingAssetIds: ReadonlySet<string> = new Set()): Asset[] {
+  const claimedIds = new Set<string>();
   // Validate item-by-item so one malformed detection doesn't discard the whole batch
   const items = (Array.isArray(rawJson) ? rawJson : []).flatMap((raw) => {
     const parsed = RawDetectedAssetSchema.safeParse(raw);
@@ -228,7 +233,10 @@ export function sanitizeDetectedAssets(rawJson: unknown): Asset[] {
       : undefined;
 
     const desc = a.description || 'No description provided.';
-    const id = a.id && a.id.trim().length > 0 ? a.id : crypto.randomUUID();
+    const candidateId = a.id?.trim() || '';
+    const isKnownAsset = existingAssetIds.has(candidateId) && !claimedIds.has(candidateId);
+    const id = isKnownAsset ? candidateId : crypto.randomUUID();
+    claimedIds.add(id);
 
     return {
       id,

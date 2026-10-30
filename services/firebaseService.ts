@@ -2,7 +2,7 @@
 import { initializeApp } from "firebase/app";
 import { getFirestore, doc, setDoc, getDoc, collection, writeBatch, getDocs, onSnapshot, deleteDoc } from "firebase/firestore";
 import { getStorage, ref, uploadString, getDownloadURL } from "firebase/storage";
-import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
+import { getAuth, signInAnonymously, onAuthStateChanged, onIdTokenChanged } from "firebase/auth";
 import { get, set, clear, del } from 'idb-keyval';
 import { Room, SiteInfo } from '../types';
 import appletConfig from "../firebase-applet-config.json";
@@ -89,6 +89,15 @@ try {
     console.log("✅ Firebase Initialized: DB + Storage + Auth Ready with Database ID:", dbId || "default");
 
     // Optional/Best-effort anonymous authentication to ensure valid credentials inside Firestore/Storage environments
+    // The AI gateway (/api/*) checks this token for the assetInspector claim; keep it current.
+    onIdTokenChanged(auth, async (user: any) => {
+        if (typeof document === 'undefined') return;
+        const token = user ? await user.getIdToken().catch(() => '') : '';
+        const secure = window.location.protocol === 'https:' ? '; Secure' : '';
+        document.cookie = token
+            ? `aip_id_token=${encodeURIComponent(token)}; Path=/api; SameSite=Strict${secure}`
+            : `aip_id_token=; Path=/api; Max-Age=0; SameSite=Strict${secure}`;
+    });
     // Refresh administrator-assigned claims (e.g. assetInspector) before any cloud call runs.
     onAuthStateChanged(auth, (user: any) => {
         if (user) user.getIdToken(true).catch(() => {}).finally(() => resolveAuthReady());

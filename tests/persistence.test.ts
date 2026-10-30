@@ -11,6 +11,7 @@ vi.mock('firebase/auth', () => {
     getAuth: () => ({}),
     signInAnonymously: async () => ({ user }),
     onAuthStateChanged: (_auth: unknown, callback: (u: unknown) => void) => { callback(user); return () => {}; },
+    onIdTokenChanged: () => () => {},
   };
 });
 vi.mock('firebase/storage', () => ({ getStorage: () => ({}), ref: vi.fn(), uploadString: vi.fn(), getDownloadURL: vi.fn() }));

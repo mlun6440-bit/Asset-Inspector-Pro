@@ -2,6 +2,33 @@ import path from 'path';
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
+import type { Plugin } from 'vite';
+// @ts-ignore -- plain ESM helper shared with server.mjs
+import { authorizeAiRequest, handleLiveToken } from './server/aiGateway.mjs';
+
+// Dev-server versions of the production AI gateway checks in server.mjs. The inspector
+// check is off by default for local development; set GEMINI_PROXY_AUTH=on to exercise it.
+function aiGatewayDevPlugin(env: Record<string, string>): Plugin {
+  const required = env.GEMINI_PROXY_AUTH === 'on';
+  return {
+    name: 'ai-gateway-dev',
+    configureServer(server) {
+      server.middlewares.use(async (req, res, next) => {
+        try {
+          if (req.url === '/api/live-token') {
+            if (await authorizeAiRequest(req, res, { required })) await handleLiveToken(req, res, { apiKey: env.GEMINI_API_KEY || '' });
+            return;
+          }
+          if (req.url?.startsWith('/api/gemini/') && !(await authorizeAiRequest(req, res, { required }))) return;
+          next();
+        } catch (err) {
+          console.error('AI gateway error:', err);
+          if (!res.headersSent) res.writeHead(502).end('Upstream error');
+        }
+      });
+    },
+  };
+}
 
 export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, '.', '');
@@ -26,6 +53,7 @@ export default defineConfig(({ mode }) => {
         },
       },
       plugins: [
+          aiGatewayDevPlugin(env),
           react(),
           VitePWA({
               registerType: 'autoUpdate',

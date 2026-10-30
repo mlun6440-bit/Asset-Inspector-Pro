@@ -574,7 +574,16 @@ function App() {
                 });
                 updatedRooms = [...updatedRooms, ...extraRooms];
             } else {
-                // Shrink rooms
+                // Shrink rooms — never silently discard recorded inspection evidence
+                const removedRooms = updatedRooms.slice(appState.siteInfo.numRooms);
+                const roomsWithData = removedRooms.filter(r => (r.assets?.length || 0) > 0 || (r.images?.length || 0) > 0);
+                if (roomsWithData.length > 0) {
+                    alert(`Can't reduce to ${appState.siteInfo.numRooms} rooms: ${roomsWithData.map(r => r.roomName).join(', ')} still contain photos or assets. Remove that data first, or keep the current room count.`);
+                    return;
+                }
+                if (!window.confirm(`Remove ${removedRooms.length} empty room(s): ${removedRooms.map(r => r.roomName).join(', ')}?`)) {
+                    return;
+                }
                 updatedRooms = updatedRooms.slice(0, appState.siteInfo.numRooms);
             }
         }
@@ -940,10 +949,17 @@ function App() {
                });
            }
 
+           // Re-inspection: the inspector's record (id, category, description, quantity, cost,
+           // age, notes) stays as entered; the AI only proposes updated condition evidence,
+           // which is flagged unverified for human review.
            finalAssets[existingIndex] = {
                ...existing,
-               ...newA,
-               id: existing.id,
+               condition: newA.condition,
+               riskRating: newA.riskRating,
+               rul: newA.rul,
+               justification: newA.justification,
+               boundingBox: newA.boundingBox ?? existing.boundingBox,
+               sourceImageIndex: newA.sourceImageIndex ?? existing.sourceImageIndex,
                auditTrail: trail,
                riskHistory,
                verified: false,

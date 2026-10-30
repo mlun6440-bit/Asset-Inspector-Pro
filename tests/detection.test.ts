@@ -52,6 +52,8 @@ describe('detection never manufactures inspection evidence', () => {
     generateContent.mockResolvedValue({ text: JSON.stringify([{ id: 'pump', category: 'Plumbing', description: 'Observed pump', quantity: 1, cost: 200, rul: 5 }]) });
     const assets = await detect(photos, ['Plumbing']);
     expect(assets).toHaveLength(1);
-    expect(assets[0]).toMatchObject({ id: 'pump', description: 'Observed pump', verified: false });
+    // 'pump' isn't an existing asset in this room, so it gets a fresh ID rather than the model's
+    expect(assets[0]).toMatchObject({ description: 'Observed pump', verified: false });
+    expect(assets[0].id).not.toBe('pump');
   });
 });

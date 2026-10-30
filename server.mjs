@@ -6,14 +6,14 @@
 // Usage:  npm run build && GEMINI_API_KEY=... npm start
 // Optional: PORT (default 3000), ALLOWED_ORIGIN (e.g. https://inspector.example.com)
 //
-// NOTE: anyone who can reach this server can use the proxy (and your Gemini quota).
-// Host it behind your organisation's sign-in (or add Firebase ID-token checks) before
-// exposing it publicly.
+// AI endpoints require a signed-in Firebase user holding the `assetInspector` claim
+// (see server/aiGateway.mjs). GEMINI_PROXY_AUTH=off disables that check — local testing only.
 
 import http from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { authorizeAiRequest, handleLiveToken } from './server/aiGateway.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.join(__dirname, 'dist');
@@ -24,6 +24,7 @@ const UPSTREAM = 'https://generativelanguage.googleapis.com';
 const PROXY_PREFIX = '/api/gemini';
 const ALLOWED_UPSTREAM_PATHS = [/^\/v1beta\//, /^\/upload\/v1beta\//];
 const MAX_BODY_BYTES = 60 * 1024 * 1024; // room for several base64 photos
+const REQUIRE_INSPECTOR = process.env.GEMINI_PROXY_AUTH !== 'off';
 
 if (!API_KEY) {
   console.warn('⚠️  GEMINI_API_KEY is not set — AI features will fail.');
@@ -62,6 +63,7 @@ async function proxyGemini(req, res) {
     res.writeHead(404).end('Not found');
     return;
   }
+  if (!(await authorizeAiRequest(req, res, { required: REQUIRE_INSPECTOR }))) return;
   if (!API_KEY) {
     res.writeHead(503, { 'content-type': 'application/json' })
       .end(JSON.stringify({ error: { message: 'AI is not configured on the server (GEMINI_API_KEY missing).' } }));
@@ -114,6 +116,10 @@ async function serveStatic(req, res) {
 http.createServer(async (req, res) => {
   try {
     if (req.url.startsWith(PROXY_PREFIX + '/')) await proxyGemini(req, res);
+    else if (req.url === '/api/live-token') {
+      if (ALLOWED_ORIGIN && req.headers.origin && req.headers.origin !== ALLOWED_ORIGIN) res.writeHead(403).end('Origin not allowed');
+      else if (await authorizeAiRequest(req, res, { required: REQUIRE_INSPECTOR })) await handleLiveToken(req, res, { apiKey: API_KEY });
+    }
     else await serveStatic(req, res);
   } catch (err) {
     console.error(err);

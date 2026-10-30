@@ -292,7 +292,7 @@ export const detectAssetsWithBoundingBoxes = async (images: { dataUrl: string }[
     }
     // A valid empty array means no assets were detected, not a reason to fabricate records.
     // Items are validated individually so one malformed detection doesn't discard the rest.
-    const sanitized = sanitizeDetectedAssets(rawAssets);
+    const sanitized = sanitizeDetectedAssets(rawAssets, new Set(existingAssets.map(a => a.id)));
     if (rawAssets.length > 0 && sanitized.length === 0) {
       throw new AssetDetectionError("The AI returned an invalid asset response. Please retry; existing assets are unchanged.");
     }
