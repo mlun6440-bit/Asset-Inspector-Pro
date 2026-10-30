@@ -57,6 +57,8 @@ export interface Room {
   buildingExternalId?: string;
   floorLevel?: string;
   roomCode?: string;
+  /** Room/area type as used in Fulcrum's Room/Area List (e.g. Office, Toilet, Meeting). */
+  roomType?: string;
   fulcrumRoomId?: string;
   images: AppImage[];
   assets: Asset[];
@@ -116,7 +118,7 @@ export interface AppState {
   siteInfo: SiteInfo;
   rooms: Room[];
   currentRoomIndex: number;
-  view: 'welcome' | 'assessment' | 'summary' | 'reconstruction' | 'ai-agent-os' | 'health-dashboard';
+  view: 'welcome' | 'assessment' | 'rooms' | 'summary' | 'reconstruction' | 'ai-agent-os' | 'health-dashboard';
   privacyMode: boolean;
 }
 

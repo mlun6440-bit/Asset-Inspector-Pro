@@ -91,7 +91,7 @@ export const RoomAssessmentView: React.FC<RoomAssessmentViewProps> = ({
       },
       {
         name: "HVAC Rooftop Unit AHU-02.jpg",
-        dataUrl: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='800' height='600' viewBox='0 0 800 600'><rect width='800' height='600' fill='%230f172a'/><rect x='100' y='120' width='600' height='360' rx='12' fill='%231e293b' stroke='%2364748b' stroke-width='6'/><circle cx='260' cy='300' r='100' fill='%23334155' stroke='%2338bdf8' stroke-width='6'/><circle cx='540' cy='300' r='100' fill='%23334155' stroke='%2338bdf8' stroke-width='6'/><path d='M260 200 L260 400 M160 300 L360 300' stroke='%2394a3b8' stroke-width='4'/><path d='M540 200 L540 400 M440 300 L640 300' stroke='%2394a3b8' stroke-width='4'/><rect x='320' y='60' width='160' height='60' fill='%23475569'/><text x='400' y='530' font-family='sans-serif' font-size='20' font-weight='bold' fill='%2338bdf8' text-anchor='middle'>ROOFTOP HVAC AHU-02 %26 CHILLER UNIT</text></svg>"
+        dataUrl: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='800' height='600' viewBox='0 0 800 600'><rect width='800' height='600' fill='%230f172a'/><rect x='100' y='120' width='600' height='360' rx='12' fill='%231e293b' stroke='%2364748b' stroke-width='6'/><circle cx='260' cy='300' r='100' fill='%23334155' stroke='%2338bdf8' stroke-width='6'/><circle cx='540' cy='300' r='100' fill='%23334155' stroke='%2338bdf8' stroke-width='6'/><path d='M260 200 L260 400 M160 300 L360 300' stroke='%2394a3b8' stroke-width='4'/><path d='M540 200 L540 400 M440 300 L640 300' stroke='%2394a3b8' stroke-width='4'/><rect x='320' y='60' width='160' height='60' fill='%23475569'/><text x='400' y='530' font-family='sans-serif' font-size='20' font-weight='bold' fill='%2338bdf8' text-anchor='middle'>ROOFTOP HVAC AHU-02 %26amp; CHILLER UNIT</text></svg>"
       }
     ];
 
@@ -154,7 +154,28 @@ export const RoomAssessmentView: React.FC<RoomAssessmentViewProps> = ({
           <span className="material-icons">door_front</span>
           <h3 className="font-bold">Room Information</h3>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
+          <input 
+            value={currentRoom.floorLevel || ''} 
+            onChange={(e) => updateCurrentRoom({ floorLevel: e.target.value })}
+            placeholder="Level (e.g. G, L1, Roof)"
+            aria-label="Level"
+            className="px-4 py-2 border rounded-lg bg-gray-50 text-black placeholder-gray-500 text-sm focus:ring-2 focus:ring-indigo-500"
+          />
+          <input 
+            value={currentRoom.roomCode || ''} 
+            onChange={(e) => updateCurrentRoom({ roomCode: e.target.value })}
+            placeholder="Room Code"
+            aria-label="Room Code"
+            className="px-4 py-2 border rounded-lg bg-gray-50 text-black placeholder-gray-500 text-sm focus:ring-2 focus:ring-indigo-500"
+          />
+          <input 
+            value={currentRoom.roomType || ''} 
+            onChange={(e) => updateCurrentRoom({ roomType: e.target.value })}
+            placeholder="Room Type (e.g. Office, Toilet)"
+            aria-label="Room Type"
+            className="px-4 py-2 border rounded-lg bg-gray-50 text-black placeholder-gray-500 text-sm focus:ring-2 focus:ring-indigo-500"
+          />
           <input 
             value={currentRoom.buildingName || ''} 
             onChange={(e) => updateCurrentRoom({ buildingName: e.target.value })}

@@ -15,6 +15,7 @@ import { RoomAssessmentView } from './components/RoomAssessmentView';
 import { SmartRoomFinder } from './components/SmartRoomFinder';
 import { AssessmentSummaryView } from './components/AssessmentSummaryView';
 import { AIAgentOS } from './components/AIAgentOS';
+import { RoomBoardView } from './components/RoomBoardView';
 import { HealthDashboardView } from './components/HealthDashboardView';
 import { EditAssetModal } from './components/EditAssetModal';
 import { MobileAppFrame } from './components/MobileAppFrame';
@@ -1180,11 +1181,11 @@ function App() {
   };
 
   const exportToCSV = () => {
-      let csvContent = ['Building Name', 'Room ID', 'Room Name', ...ASSET_EXPORT_HEADERS].map(csvCell).join(",") + "\n";
+      let csvContent = ['Building Name', 'Room ID', 'Level', 'Room Code', 'Room Name', 'Room Type', ...ASSET_EXPORT_HEADERS].map(csvCell).join(",") + "\n";
       
       appState.rooms.forEach(room => {
           room.assets.forEach(a => {
-              const row = [appState.siteInfo.name, room.id, room.roomName, ...assetExportRow(a, isBuildingFabric(a.category))]
+              const row = [appState.siteInfo.name, room.id, room.floorLevel || '', room.roomCode || '', room.roomName, room.roomType || '', ...assetExportRow(a, isBuildingFabric(a.category))]
                   .map(csvCell).join(",");
               csvContent += row + "\n";
           });
@@ -1955,6 +1956,17 @@ function App() {
                               AI Agent OS
                           </button>
                           <button
+                              onClick={() => setAppState(prev => ({ ...prev, view: 'rooms' }))}
+                              className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+                                  appState.view === 'rooms'
+                                      ? 'bg-indigo-600 text-white shadow'
+                                      : 'text-gray-600 hover:bg-slate-50'
+                              }`}
+                          >
+                              <span className="material-icons text-sm">grid_view</span>
+                              Room Board
+                          </button>
+                          <button
                               onClick={() => setAppState(prev => ({ ...prev, view: 'health-dashboard' }))}
                               className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 ${
                                   appState.view === 'health-dashboard'
@@ -2094,6 +2106,15 @@ function App() {
                           exportForRAG={exportForRAG}
                           setAppState={setAppState}
                           handleReset={handleReset}
+                      />
+                  )}
+
+                  {appState.view === 'rooms' && (
+                      <RoomBoardView
+                          siteName={appState.siteInfo.name}
+                          rooms={appState.rooms}
+                          onOpenRoom={(roomIndex) => setAppState(prev => ({ ...prev, currentRoomIndex: roomIndex, view: 'assessment' }))}
+                          onPreviewImage={setPreviewImage}
                       />
                   )}
 
