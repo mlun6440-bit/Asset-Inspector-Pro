@@ -99,3 +99,67 @@ Read this file and the current repo before proposing a migration. Produce:
 4. A staged, read-only-first prototype plan with measurable success criteria and explicit blockers.
 
 **Do not** access client records, modify production data, perform a bulk migration, or replace Firebase without a separate authorised implementation request.
+
+## 11. Migration readiness — status and decisions (30 October 2026)
+**Status:** implemented on branch `claude/laughing-euler-9bd59w` (PR #2), awaiting owner review. Not merged or deployed.
+
+**Consolidated fixes (verified code facts):**
+- PRs #1, #2 and #4 combined into one branch. #1 and #4 are superseded once #2 merges.
+- **Data integrity:**
+  - No fabricated AI data: no placeholder assets, invented RUL or CAPEX, forecast multipliers, or default condition/risk/cost/RUL.
+  - Values the AI omits stay blank, show as "Not assessed", and are listed in the audit trail.
+  - Existing asset and room IDs are never changed. Model-supplied IDs are only accepted when they match an existing asset in the same room.
+  - Re-inspection only proposes condition/risk/RUL and keeps the inspector's record.
+- **Review flags:** every export (Excel, CSV, PDF, JSON) includes Asset ID, Source (AI/Manual) and Review Status. AI findings read "AI – needs review" until verified.
+- **Persistence:**
+  - Failed cloud writes stay queued for retry.
+  - Queued local drafts are not overwritten by the cloud copy.
+  - Autosave persists committed React state and runs saves in order.
+- **Security:**
+  - Firestore and Storage require the administrator-assigned `assetInspector` claim (see `docs/security-rollout.md`).
+  - The Gemini key is server-side only (`/api/gemini` proxy; Live voice/camera uses single-use ephemeral tokens from `/api/live-token`).
+  - The AI gateway requires the same inspector claim.
+- **Portability:** the app runs outside AI Studio with Node 20+ (`npm ci`, `npm run dev` / `npm start`). See README.md.
+- **Tests:** vitest unit tests with synthetic data, plus Firebase emulator rules tests (`npm run test:rules`).
+
+**Known remaining items (deliberately not changed):**
+- Assets deleted locally are not deleted from Firestore. Changing that would make sync destructive, so it needs an owner decision.
+- Tailwind, SheetJS, jsPDF and Material Icons still load from public CDNs. A corporate content-security policy may block them; they can be moved to npm if so.
+- The Health Dashboard counts assets with no condition as "Average" when grouping.
+- The inspection ID is still derived from the site name, so renaming a site creates a new cloud record.
+
+## 12. Microsoft integration assessment (documentation only; nothing connected)
+Sources were checked through web search in October 2026. Some Microsoft pages could not be opened directly, so treat licensing details as **unverified** until IT confirms them for the tenant.
+
+- **Copilot Code** (Microsoft Frontier preview; rollout from 21 Oct 2026):
+  - It is an AI app-building tab in the Microsoft Copilot app.
+  - It can clone a GitHub repo once an admin enables GitHub access.
+  - It has cloud and local project modes; local mode needs admin enablement.
+  - Requires an M365 Copilot licence plus Copilot Credits.
+  - **Unverified:** whether its cloud mode can run `npm ci`/Vite and reach Google APIs.
+  - Treat it as an optional development environment, not a hosting decision.
+- **Copilot Managed Runtime (hosting):**
+  - Connector-based (`@microsoft/managed-apps`), billed at 0.1 Copilot Credits per API call.
+  - Running this app there unchanged (Firebase, Gemini and Maps called directly) is unlikely to work without custom connectors. Not recommended for the first step.
+- **Power Apps code apps:**
+  - Can host React/Vite apps with Entra sign-in.
+  - Every user needs Power Apps Premium, and Dataverse is required.
+  - The content-security policy blocks outbound calls unless an admin allow-lists domains.
+  - Desktop browsers only, which conflicts with mobile field inspections.
+- **Lowest-friction development options for the code as it stands:**
+  - GitHub Copilot coding agent or Codespaces, which run `npm ci` in a configurable environment.
+  - Copilot Code once the tenant has it.
+- **Entra ID:**
+  - Feasible via MSAL.js (auth code + PKCE, SPA app registration) behind the existing `firebaseService` auth boundary.
+  - The `assetInspector` claim maps to an Entra app role or group.
+  - Needs an IT app registration.
+- **SharePoint Lists:**
+  - Suitable for small lookup lists (sites, rooms).
+  - Each list holds up to 30 million items, but queries over 5,000 items need indexed, filtered columns.
+  - Not suitable for photos or high-volume asset history.
+- **Dataverse:** a strong fit for a governed system of record. Needs Premium licences and capacity.
+- **Power Automate:** good for notifications and approvals. The HTTP action and other premium connectors need paid licences; don't use it as the main data path.
+- **Copilot Studio:** agents are billed in Copilot Credits. Useful later for Q&A over *approved* data. How an agent would call into the app is unverified.
+- **Hosting:** Azure Static Web Apps (Free or Standard tier) plus a small API for the AI gateway is the closest equivalent to today's `server.mjs`.
+
+**Recommended next step:** before any Microsoft integration, put a thin data-access interface in front of `firebaseService`. A read-only SQL/Dataverse adapter can then be added for the Stage B proof of concept (section 8) without touching the UI. No integration should be built until IT answers the section 7 questions.
