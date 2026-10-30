@@ -3,14 +3,16 @@ import { GoogleGenAI, Type, Schema } from "@google/genai";
 import { Asset, Room, SiteInfo, ChatMessage, WorkOrder } from '../types';
 import { safeParseJson, sanitizeDetectedAssets } from './schemas';
 
-// process.env.API_KEY is injected by the environment.
-const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY || '';
-const ai = new GoogleGenAI({ 
-  apiKey,
+// The real Gemini API key never reaches the browser. All calls go to a same-origin
+// proxy (/api/gemini — see server.mjs and the dev proxy in vite.config.ts) which
+// attaches GEMINI_API_KEY server-side. The SDK still requires a non-empty key, so a
+// placeholder is sent and the proxy strips/replaces it.
+const GEMINI_PROXY_PATH = (import.meta as any).env?.VITE_GEMINI_PROXY_PATH || '/api/gemini';
+const AI_PROXY_ENABLED = true;
+const ai = new GoogleGenAI({
+  apiKey: 'server-side-proxy',
   httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
-    }
+    baseUrl: typeof window !== 'undefined' ? `${window.location.origin}${GEMINI_PROXY_PATH}` : GEMINI_PROXY_PATH,
   }
 });
 
@@ -116,65 +118,16 @@ export const cropImage = async (base64Image: string, bbox: { x: number, y: numbe
   }
 };
 
-export const getFallbackDetectedAssets = (allowedCategories: string[]): Asset[] => {
-  const defaults = [
-    {
-      id: crypto.randomUUID(),
-      category: allowedCategories.find(c => c.toLowerCase().includes('electrical')) || "Electrical Services (Distribution Boards, Wiring, Lighting)",
-      name: "Main Distribution Board (MSB-01)",
-      description: "Surface mounted industrial steel distribution panel with labeled circuit breakers and isolators.",
-      condition: "Good",
-      riskRating: "Low",
-      justification: "Panel enclosure is clean and properly latched with no visible scorch or overheating marks.",
-      quantity: "1",
-      cost: "3200",
-      age: "4",
-      rul: "16",
-      notes: "Annual thermographic scan up to date.",
-      sourceImageIndex: 0,
-      boundingBox: { x: 0.15, y: 0.15, width: 0.35, height: 0.55 },
-      aiDetected: true,
-      verified: false
-    },
-    {
-      id: crypto.randomUUID(),
-      category: allowedCategories.find(c => c.toLowerCase().includes('hvac')) || "Mechanical & HVAC (Air Conditioning, Ventilation, Fans)",
-      name: "Rooftop HVAC Air Handling Unit (AHU-02)",
-      description: "Ducted packaged rooftop air conditioning unit with primary refrigerant line trunking.",
-      condition: "Average",
-      riskRating: "Medium",
-      justification: "Operational wear with minor surface oxidation on condenser housing; filter renewal due.",
-      quantity: "1",
-      cost: "5500",
-      age: "7",
-      rul: "5",
-      notes: "Clean evaporator coil and inspect belt tension next service cycle.",
-      sourceImageIndex: 0,
-      boundingBox: { x: 0.52, y: 0.18, width: 0.42, height: 0.48 },
-      aiDetected: true,
-      verified: false
-    },
-    {
-      id: crypto.randomUUID(),
-      category: allowedCategories.find(c => c.toLowerCase().includes('fabric')) || "Building Structural & Fabric (Floors, Walls, Ceilings, Doors, Windows)",
-      name: "Reinforced Concrete Floor & Wall Substructure",
-      description: "Epoxy sealed reinforced concrete structural flooring and rendered blockwork partition walls.",
-      condition: "Good",
-      riskRating: "Low",
-      justification: "Uniform concrete slab integrity with no active structural expansion cracks or dampness.",
-      quantity: "1",
-      cost: "2000",
-      age: "8",
-      rul: "22",
-      notes: "No remedial structural action required.",
-      sourceImageIndex: 0,
-      boundingBox: { x: 0.05, y: 0.05, width: 0.90, height: 0.90 },
-      aiDetected: true,
-      verified: false
-    }
-  ];
-  return sanitizeDetectedAssets(defaults);
-};
+/**
+ * Thrown when AI asset detection cannot run or fails. Callers must surface this to the
+ * inspector instead of inventing assets — a register must never contain fabricated rows.
+ */
+export class AssetDetectionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AssetDetectionError';
+  }
+}
 
 export const detectAssetsWithBoundingBoxes = async (images: { dataUrl: string }[], allowedCategories: string[], privacyMode: boolean = false, existingAssets: Asset[] = []): Promise<Asset[]> => {
   if (!images || images.length === 0) return [];
@@ -315,10 +268,11 @@ export const detectAssetsWithBoundingBoxes = async (images: { dataUrl: string }[
     }
   }
 
-  // If no API key or image payload extraction failed, fallback safely
-  if (!apiKey || parts.length === 1) {
-    console.warn("AI detection operating in fallback baseline mode (API key unconfigured or images unreadable).");
-    return getFallbackDetectedAssets(allowedCategories);
+  if (!AI_PROXY_ENABLED) {
+    throw new AssetDetectionError("AI detection is not configured on the server.");
+  }
+  if (parts.length === 1) {
+    throw new AssetDetectionError("None of the room photos could be read. Re-take or re-upload the photos and try again.");
   }
 
   try {
@@ -332,14 +286,12 @@ export const detectAssetsWithBoundingBoxes = async (images: { dataUrl: string }[
     });
 
     const rawAssets = safeParseJson<any[]>(response.text, []);
-    const sanitized = sanitizeDetectedAssets(rawAssets);
-    if (sanitized.length > 0) {
-      return sanitized;
-    }
-    return getFallbackDetectedAssets(allowedCategories);
+    // An empty result is a valid answer (e.g. an empty room) — return it as-is.
+    return sanitizeDetectedAssets(rawAssets);
   } catch (error) {
-    console.error("Asset detection API call encountered an issue, generating resilient baseline assets:", error);
-    return getFallbackDetectedAssets(allowedCategories);
+    console.error("Asset detection API call failed:", error);
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new AssetDetectionError(`AI asset detection failed: ${reason}`);
   }
 };
 
@@ -445,7 +397,7 @@ export const createChatStream = async (
   contextData: any, 
   privacyMode: boolean = false
 ) => {
-  if (!apiKey) throw new Error("API Key not found");
+  if (!AI_PROXY_ENABLED) throw new Error("API Key not found");
 
   let systemPrompt = "";
   
@@ -644,7 +596,7 @@ export const createChatStream = async (
 };
 
 export const analyzeDocument = async (base64Data: string, mimeType: string, fileName: string): Promise<string> => {
-    if (!apiKey) throw new Error("API Key not found");
+    if (!AI_PROXY_ENABLED) throw new Error("API Key not found");
 
     const prompt = `
       You are a Senior Engineering Asset Manager.
@@ -671,7 +623,7 @@ export const analyzeDocument = async (base64Data: string, mimeType: string, file
 };
 
 export const extractAssetsFromVendorRegister = async (base64Data: string, mimeType: string, fileName: string): Promise<{roomName: string, assets: Partial<Asset>[]}[]> => {
-    if (!apiKey) throw new Error("API Key not found");
+    if (!AI_PROXY_ENABLED) throw new Error("API Key not found");
 
     const prompt = `
       You are an AI Data Engineer specializing in Asset Management.
@@ -741,7 +693,7 @@ export const extractAssetsFromVendorRegister = async (base64Data: string, mimeTy
 };
 
 export const summarizeConversation = async (messages: ChatMessage[]): Promise<string> => {
-    if (!apiKey) throw new Error("API Key not found");
+    if (!AI_PROXY_ENABLED) throw new Error("API Key not found");
     if (messages.length < 2) return ""; 
 
     const chatLog = messages.map(m => `${m.role.toUpperCase()}: ${m.text}`).join('\n');
@@ -775,7 +727,7 @@ export const reconstructLayoutFromImage = async (
   base64Image: string,
   slices: { position: number; direction: 'vertical' | 'horizontal' }[]
 ): Promise<any[]> => {
-  if (!apiKey) throw new Error("API Key not found");
+  if (!AI_PROXY_ENABLED) throw new Error("API Key not found");
 
   let base64Data = base64Image;
   let mimeType = 'image/jpeg';
@@ -866,7 +818,7 @@ export const analyzePMReportAndMapConditions = async (
   fileName: string,
   currentAssets: { id: string; name: string; category: string; roomName: string; currentCondition: string }[]
 ): Promise<ProposedConditionUpdate[]> => {
-  if (!apiKey) throw new Error("API Key not found");
+  if (!AI_PROXY_ENABLED) throw new Error("API Key not found");
 
   const prompt = `
     You are an expert AI Reliability Engineer and Asset Analyst.
@@ -975,7 +927,7 @@ export const analyzeCFOFinance = async (
   customRules: string[],
   memories: string[]
 ): Promise<CFOAnalysisResult> => {
-  if (!apiKey) throw new Error("API Key not found");
+  if (!AI_PROXY_ENABLED) throw new Error("API Key not found");
 
   const prompt = `
     You are an expert AI CFO, Capital Allocator, and Corporate Treasurer operating on a portfolio of physical capital assets.
@@ -1089,13 +1041,14 @@ export const analyzeCFOFinance = async (
     let shortTerm = 0;
     let mediumTerm = 0;
     let highRiskCost = 0;
+    let unknownRul = 0;
 
     assets.forEach(a => {
       const c = parseFloat(a.cost) || 0;
-      const parsedRul = parseFloat(a.rul);
-      const r = Number.isFinite(parsedRul) ? parsedRul : 5;
+      const r = parseFloat(a.rul);
       totalCost += c;
-      if (r <= 2) immediate += c;
+      if (Number.isNaN(r)) unknownRul += 1; // don't guess a remaining life
+      else if (r <= 2) immediate += c;
       else if (r <= 5) shortTerm += c;
       else if (r <= 10) mediumTerm += c;
 
@@ -1109,7 +1062,7 @@ export const analyzeCFOFinance = async (
 
     const hasData = assets.length > 0;
     const summary = hasData
-      ? `Analysis computed from ${assets.length} registered asset(s). Total verified capital valuation is $${totalCost.toLocaleString()} with $${immediate.toLocaleString()} in immediate replacement requirements.`
+      ? `AI analysis unavailable — figures below are straight totals from ${assets.length} registered asset(s), with no forecasting. Total recorded replacement cost is $${totalCost.toLocaleString()}, of which $${immediate.toLocaleString()} sits on assets with 2 years or less remaining life.${unknownRul > 0 ? ` ${unknownRul} asset(s) have no remaining life recorded and are excluded from the timing buckets.` : ''}`
       : "insufficient_data: No asset records provided for financial valuation analysis. Please add registered assets to generate capital expenditure projections.";
 
     return {
@@ -1120,14 +1073,8 @@ export const analyzeCFOFinance = async (
       mediumTermCAPEX: mediumTerm,
       monthlyAllocation: monthlyAlloc,
       riskConcentrationPercentage: riskPercent,
-      scenarios: [
-        { year: '2026', baseAmount: immediate * 0.4, stressAmount: immediate * 0.5, inflationAmount: immediate * 0.42 },
-        { year: '2027', baseAmount: immediate * 0.6, stressAmount: immediate * 0.8, inflationAmount: immediate * 0.65 },
-        { year: '2028', baseAmount: shortTerm * 0.3, stressAmount: shortTerm * 0.4, inflationAmount: shortTerm * 0.34 },
-        { year: '2029', baseAmount: shortTerm * 0.3, stressAmount: shortTerm * 0.4, inflationAmount: shortTerm * 0.35 },
-        { year: '2030', baseAmount: shortTerm * 0.4, stressAmount: shortTerm * 0.5, inflationAmount: shortTerm * 0.49 },
-        { year: '2031', baseAmount: mediumTerm * 0.2, stressAmount: mediumTerm * 0.3, inflationAmount: mediumTerm * 0.26 }
-      ],
+      scenarios: [], // no multi-year forecast without the AI model
+      // Rank by cost x risk weighting instead of taking the first five rows in register order.
       criticalAssets: assets.map(a => {
         const costVal = parseFloat(a.cost) || 0;
         const multiplier = a.riskRating === 'Extreme' ? 10 : a.riskRating === 'High' ? 6 : a.riskRating === 'Medium' ? 3 : 1;
@@ -1137,7 +1084,7 @@ export const analyzeCFOFinance = async (
           roomName: a.roomName,
           cost: costVal,
           condition: a.condition,
-          riskRating: a.riskRating || 'Medium',
+          riskRating: a.riskRating || 'Unrated',
           score: Math.round((costVal * multiplier) / 1000)
         };
       }).sort((x, y) => y.score - x.score).slice(0, 5),
@@ -1154,7 +1101,7 @@ export interface AsBuiltAnalysisResult {
 }
 
 export const analyzeAsBuiltDrawing = async (base64Data: string, mimeType: string, discipline: string): Promise<AsBuiltAnalysisResult> => {
-  if (!apiKey) throw new Error("API Key not found");
+  if (!AI_PROXY_ENABLED) throw new Error("API Key not found");
   const prompt = `
     You are an engineering surveyor and drafting expert auditing architectural and engineering as-built drawings.
     Analyze this drawing image or blueprint for the "${discipline}" discipline.
@@ -1201,8 +1148,8 @@ export const analyzeAsBuiltDrawing = async (base64Data: string, mimeType: string
   } catch (e) {
     console.error("As-built drawing analysis failed", e);
     return {
-      summary: "As-built blueprint loaded. Unable to fully extract legend data via OCR due to resolution, but indexed successfully in the Drawings Repository.",
-      detectedEquipment: ["General " + discipline + " Asset", "Service Control Panel"]
+      summary: "Drawing stored, but AI extraction failed — no equipment was identified. Review the drawing manually or retry.",
+      detectedEquipment: []
     };
   }
 };
@@ -1220,7 +1167,7 @@ export const analyzeHistoricalVisionDegradation = async (
   currentCondition: string,
   historyCaptures: { dateCaptured: string; condition: string; notes: string }[]
 ): Promise<VisionDegradationResult> => {
-  if (!apiKey) throw new Error("API Key not found");
+  if (!AI_PROXY_ENABLED) throw new Error("API Key not found");
 
   const prompt = `
     You are an engineering risk specialist monitoring physical asset degradation over time.
@@ -1282,22 +1229,8 @@ export const analyzeHistoricalVisionDegradation = async (
     return JSON.parse(response.text || "{}");
   } catch (e) {
     console.error("Degradation analysis failed", e);
-    // Simple fallback
-    const trend = historyCaptures.map(c => {
-      let score = 3;
-      if (c.condition === 'Excellent') score = 5;
-      else if (c.condition === 'Good') score = 4;
-      else if (c.condition === 'Fair') score = 2;
-      else if (c.condition === 'Poor') score = 1;
-      return { date: c.dateCaptured, conditionScore: score, conditionLabel: c.condition };
-    });
-
-    return {
-      analysisText: "Visual condition timeline evaluated via fallback degradation algorithm. Trend indicates active degradation across inspection checkpoints. Recommend scheduling preventive component renewal to avoid full service disruption.",
-      conditionTrend: trend,
-      estimatedRemainingYears: 4,
-      degradationVelocityLabel: 'Slow & Predictable'
-    };
+    // Do not invent a trend verdict or remaining-life figure; let the caller report the failure.
+    throw new Error("AI degradation analysis failed. No trend or remaining-life estimate was produced.");
   }
 };
 
@@ -1332,6 +1265,7 @@ export const analyzeWorkOrdersForCapexOrRework = async (
   customRules: string[] = [],
   memories: string[] = []
 ): Promise<WorkOrderAnalysisResult> => {
+  if (!AI_PROXY_ENABLED) throw new Error("API Key not found");
 
   const prompt = `
     You are Jarvis, an advanced AI Asset Operations and CFO Advisory Engine.
@@ -1372,8 +1306,6 @@ export const analyzeWorkOrdersForCapexOrRework = async (
   `;
 
   try {
-    // Throwing here routes to the deterministic fallback in the catch below
-    if (!apiKey) throw new Error("API Key not found");
     const response = await ai.models.generateContent({
       model: 'gemini-3.7-flash',
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
@@ -1429,45 +1361,10 @@ export const analyzeWorkOrdersForCapexOrRework = async (
 
     return JSON.parse(response.text || "{}");
   } catch (e) {
-    console.error("Jarvis work order audit failed", e);
-    // Real computation based strictly on provided work orders
-    const totalSpent = workOrders.reduce((sum, wo) => sum + (Number(wo.cost) || 0), 0);
-    const correctiveOrders = workOrders.filter(wo => wo.maintenanceType === 'Corrective' || wo.maintenanceType === 'Emergency');
-    const opexLeak = correctiveOrders.reduce((sum, wo) => sum + (Number(wo.cost) || 0), 0);
-    const hasWorkOrders = workOrders.length > 0;
-    
-    const summary = hasWorkOrders
-      ? `Audit compiled from ${workOrders.length} maintenance record(s). Total maintenance expenditure is $${totalSpent.toLocaleString()} with $${opexLeak.toLocaleString()} in corrective/emergency repairs.`
-      : "insufficient_data: No historical maintenance work orders logged for this facility. Please import work order records to identify rework loops and trade-offs.";
-
-    const detections = correctiveOrders.map((wo, idx) => ({
-      id: wo.id || `det-${idx + 1}`,
-      assetName: wo.assetName || 'Unspecified Asset',
-      roomName: wo.roomName || 'General Facility',
-      category: wo.category || 'General Building',
-      issueDescription: `Corrective maintenance: ${wo.description || 'Routine corrective repair'}. Costing $${(Number(wo.cost) || 0).toLocaleString()}.`,
-      totalTickets: 1,
-      moneySpent: Number(wo.cost) || 0,
-      verdict: 'REWORK_LOOP' as const,
-      recommendation: 'Evaluate recurring ticket frequency. If maintenance cost approaches replacement threshold, schedule capital replacement under ISO 55001 Clause 8.1.',
-      isoClause: 'ISO 55001 Clause 8.1'
-    }));
-
-    return {
-      executiveSummary: summary,
-      totalMaintenanceSpent: totalSpent,
-      reworkCost: opexLeak,
-      capexReinvestNeeded: Math.round(opexLeak * 1.5),
-      reworkPercentage: totalSpent > 0 ? Math.round((opexLeak / totalSpent) * 100) : 0,
-      detections: detections.slice(0, 5),
-      spendByYearProjection: [
-        { year: '2026', repairOPEX: Math.round(opexLeak * 1.1), replacementCAPEX: Math.round(opexLeak * 1.5) },
-        { year: '2027', repairOPEX: Math.round(opexLeak * 1.2), replacementCAPEX: Math.round(opexLeak * 0.1) },
-        { year: '2028', repairOPEX: Math.round(opexLeak * 1.3), replacementCAPEX: Math.round(opexLeak * 0.05) },
-        { year: '2029', repairOPEX: Math.round(opexLeak * 1.4), replacementCAPEX: 0 },
-        { year: '2030', repairOPEX: Math.round(opexLeak * 1.5), replacementCAPEX: 0 }
-      ]
-    };
+    console.error("Work order audit failed", e);
+    // Previously this labelled every corrective WO a "rework loop" and projected CAPEX with
+    // arbitrary multipliers. Fail visibly instead.
+    throw new Error("AI work order audit failed. No rework or CAPEX findings were produced.");
   }
 };
 
@@ -1607,7 +1504,7 @@ export const cognifyDataSources = async (
   });
 
   // If no unstructured text or no API key, return baseline
-  if ((!unstructuredTexts || unstructuredTexts.length === 0 || unstructuredTexts.join('').trim() === '') || !apiKey) {
+  if ((!unstructuredTexts || unstructuredTexts.length === 0 || unstructuredTexts.join('').trim() === '') || !AI_PROXY_ENABLED) {
     return { nodes, edges };
   }
 
@@ -1691,8 +1588,8 @@ export const queryCogneeGraph = async (
   graph: { nodes: any[], edges: any[] }
 ): Promise<{ answer: string, traversedNodes: string[], traversedEdges: string[] }> => {
   // Callers fall back to the deterministic graph engine when this throws
-  if (!apiKey) {
-    throw new Error("Gemini API key is required to perform semantic graph queries.");
+  if (!AI_PROXY_ENABLED) {
+    throw new Error("Gemini AI proxy is not configured for semantic graph queries.");
   }
 
   try {

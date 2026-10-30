@@ -2,7 +2,7 @@
 import { initializeApp } from "firebase/app";
 import { getFirestore, doc, setDoc, getDoc, collection, writeBatch, getDocs, onSnapshot, deleteDoc } from "firebase/firestore";
 import { getStorage, ref, uploadString, getDownloadURL } from "firebase/storage";
-import { getAuth, signInAnonymously } from "firebase/auth";
+import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
 import { get, set, clear, del } from 'idb-keyval';
 import { Room, SiteInfo } from '../types';
 import appletConfig from "../firebase-applet-config.json";
@@ -24,6 +24,11 @@ let db: any;
 let storage: any;
 let auth: any;
 let isConfigured = false;
+
+// Resolves once Firebase Auth has a signed-in user (or sign-in has definitely failed).
+// The security rules require request.auth, so every cloud read/write awaits this first.
+let resolveAuthReady: () => void = () => {};
+const authReady: Promise<void> = new Promise(resolve => { resolveAuthReady = resolve; });
 
 // Strict Firestore Error standard from system skill instructions
 export enum OperationType {
@@ -84,9 +89,13 @@ try {
     console.log("✅ Firebase Initialized: DB + Storage + Auth Ready with Database ID:", dbId || "default");
 
     // Optional/Best-effort anonymous authentication to ensure valid credentials inside Firestore/Storage environments
+    onAuthStateChanged(auth, (user: any) => { if (user) resolveAuthReady(); });
     signInAnonymously(auth)
         .then(() => console.log("🔐 Authenticated anonymously to Firebase"))
-        .catch(e => console.warn("⚠️ Anonymous login deferred/disabled on project console:", e.message));
+        .catch(e => {
+            console.warn("⚠️ Anonymous sign-in failed — cloud sync will be refused by security rules. Enable Anonymous sign-in in the Firebase console.", e.message);
+            resolveAuthReady(); // unblock callers; their requests will fail and fall back to local storage
+        });
 } catch (e) {
     console.error("Firebase Initialization Error:", e);
 }
@@ -278,6 +287,7 @@ export class FirebaseService {
   // Helper to upload a single base64 image to Firebase Storage
   private async uploadImage(base64: string, path: string): Promise<string> {
     if (!storage) return base64;
+    await authReady;
     try {
         const storageRef = ref(storage, path);
         await uploadString(storageRef, base64, 'data_url');
@@ -400,6 +410,7 @@ export class FirebaseService {
   // Main cloud sync logic
   async saveStateToCloudDirect(siteInfo: SiteInfo, rooms: Room[]): Promise<void> {
     if (!isConfigured || !db) return;
+    await authReady;
     
     const inspectionId = siteInfo?.name ? siteInfo.name.trim().replace(/\s+/g, '_').toLowerCase() : 'draft_inspection';
     const inspectionDocRef = doc(db, "inspections", inspectionId);
@@ -625,6 +636,7 @@ export class FirebaseService {
             const pendingQueue = await get('pending_sync_queue') || {};
             if (pendingQueue[inspectionId]) return result;
 
+            await authReady;
             const docRef = doc(db, "inspections", inspectionId);
             const docSnap = await getDoc(docRef);
 
@@ -664,6 +676,7 @@ export class FirebaseService {
       }
 
       try {
+          await authReady;
           const colRef = collection(db, "inspections");
           const snapshot = await getDocs(colRef);
           const cloudList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
@@ -689,6 +702,7 @@ export class FirebaseService {
   // Real-time Presence API for Multi-Inspector collaboration
   async updatePresence(inspectionId: string, userId: string, email: string, isEditing: boolean, editClaimedAt: number = 0): Promise<void> {
     if (!isConfigured || !db) return;
+    await authReady;
     const docRef = doc(db, "inspections", inspectionId, "presence", userId);
     try {
         await setDoc(docRef, {
@@ -710,17 +724,27 @@ export class FirebaseService {
         return () => {};
     }
     const colRef = collection(db, "inspections", inspectionId, "presence");
-    return onSnapshot(colRef, (snapshot) => {
-        const list = snapshot.docs.map(doc => doc.data());
-        callback(list);
-    }, (err) => {
-        console.warn("Presence listen error:", err);
-        callback([]);
+    let unsubscribe: (() => void) | null = null;
+    let cancelled = false;
+    authReady.then(() => {
+        if (cancelled) return;
+        unsubscribe = onSnapshot(colRef, (snapshot: any) => {
+            const list = snapshot.docs.map((d: any) => d.data());
+            callback(list);
+        }, (err: any) => {
+            console.warn("Presence listen error:", err);
+            callback([]);
+        });
     });
+    return () => {
+        cancelled = true;
+        if (unsubscribe) unsubscribe();
+    };
   }
 
   async removePresence(inspectionId: string, userId: string): Promise<void> {
     if (!isConfigured || !db) return;
+    await authReady;
     const docRef = doc(db, "inspections", inspectionId, "presence", userId);
     try {
         await deleteDoc(docRef);
