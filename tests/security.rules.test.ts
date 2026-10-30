@@ -16,7 +16,7 @@ describe.skipIf(!enabled)('inspection team authorization (Firebase emulators)', 
     });
     await env.withSecurityRulesDisabled(async ctx => {
       await setDoc(doc(ctx.firestore(), 'inspections/site'), { siteInfo: {}, rooms: [], lastUpdated: 'today' });
-      await uploadBytes(ref(ctx.storage(), 'inspections/site/photo.jpg'), new Uint8Array([1, 2, 3]));
+      await uploadBytes(ref(ctx.storage(), 'inspections/site/photo.jpg'), new Uint8Array([1, 2, 3]), { contentType: 'image/jpeg' });
     });
   });
   afterAll(async () => { await env?.cleanup(); });
@@ -35,26 +35,35 @@ describe.skipIf(!enabled)('inspection team authorization (Firebase emulators)', 
   it('allows the explicitly approved shared inspection team', async () => {
     const db = env.authenticatedContext('approved', { assetInspector: true }).firestore();
     await assertSucceeds(getDocs(collection(db, 'inspections')));
-    for (const path of ['inspections/approved', 'inspections/approved/assets/a', 'inspections/approved/presence/u']) {
-      await assertSucceeds(setDoc(doc(db, path), { id: 'a' }));
+    const validDocs: Record<string, Record<string, unknown>> = {
+      'inspections/approved': { siteInfo: {}, rooms: [], lastUpdated: 'now' },
+      'inspections/approved/assets/a': { id: 'a', category: 'HVAC', condition: 'Good' },
+      'inspections/approved/presence/u': { userId: 'u', email: 'inspector@example.com', lastActive: 'now', isEditing: true, editClaimedAt: 1 },
+    };
+    for (const [path, data] of Object.entries(validDocs)) {
+      await assertSucceeds(setDoc(doc(db, path), data));
       await assertSucceeds(getDoc(doc(db, path)));
       await assertSucceeds(deleteDoc(doc(db, path)));
     }
+    // Approved inspectors still can't write malformed records
+    await assertFails(setDoc(doc(db, 'inspections/approved/assets/b'), { id: 'b' }));
     await assertFails(setDoc(doc(db, 'roles/self'), { assetInspector: true }));
   });
   it.each(['public', 'anonymous'])('denies %s photo reads, writes, and deletes', async kind => {
     const ctx = kind === 'public' ? env.unauthenticatedContext() : env.authenticatedContext(kind);
     const photo = ref(ctx.storage(), 'inspections/site/photo.jpg');
     await assertFails(getBytes(photo));
-    await assertFails(uploadBytes(photo, new Uint8Array([9])));
+    await assertFails(uploadBytes(photo, new Uint8Array([9]), { contentType: 'image/jpeg' }));
     await assertFails(deleteObject(photo));
   });
   it('allows approved inspectors to save and retrieve photo evidence', async () => {
     const storage = env.authenticatedContext('approved', { assetInspector: true }).storage();
     const photo = ref(storage, 'inspections/site/approved.jpg');
-    await assertSucceeds(uploadBytes(photo, new Uint8Array([4, 5])));
+    await assertSucceeds(uploadBytes(photo, new Uint8Array([4, 5]), { contentType: 'image/jpeg' }));
     await assertSucceeds(getBytes(photo));
     await assertSucceeds(deleteObject(photo));
-    await assertFails(uploadBytes(ref(storage, 'outside/photo.jpg'), new Uint8Array([4])));
+    await assertSucceeds(uploadBytes(ref(storage, 'inspections/site/documents/plan.pdf'), new Uint8Array([4]), { contentType: 'application/pdf' }));
+    await assertFails(uploadBytes(ref(storage, 'inspections/site/script.js'), new Uint8Array([4]), { contentType: 'text/javascript' }));
+    await assertFails(uploadBytes(ref(storage, 'outside/photo.jpg'), new Uint8Array([4]), { contentType: 'image/jpeg' }));
   });
 });
