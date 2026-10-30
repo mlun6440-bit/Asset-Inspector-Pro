@@ -5,6 +5,7 @@ import { SiteInfo, Room, AppState, Asset, ChatMessage, AuditEntry } from './type
 import { firebaseService } from './services/firebaseService';
 import { detectAssetsWithBoundingBoxes, cropImage, summarizeConversation, analyzeDocument, extractAssetsFromVendorRegister } from './services/geminiService';
 import { usePresenceSession } from './hooks/usePresenceSession';
+import { useRoomAutosave } from './hooks/useRoomAutosave';
 import { ChatBot } from './components/ChatBot';
 import { ArchitecturalReconstruction } from './components/ArchitecturalReconstruction';
 import { WelcomeView } from './components/WelcomeView';
@@ -605,24 +606,20 @@ function App() {
     firebaseService.saveState(updatedSiteInfo, newRooms);
   };
 
+  const requestRoomSave = useRoomAutosave(appState.siteInfo, appState.rooms);
+
   // `force` is for handlers that have just claimed the edit lock in this same render,
   // where `hasEditLock` is still the stale value
   const updateCurrentRoom = (updates: Partial<Room>, force = false) => {
     if (!hasEditLock && !force) return;
-    // The updater may run later (during render) when other updates are queued, so the save
-    // must happen from inside it; the flag keeps StrictMode's double invocation to one save
-    let saved = false;
     setAppState(prev => {
-      const nextRooms = [...prev.rooms];
-      nextRooms[prev.currentRoomIndex] = { ...nextRooms[prev.currentRoomIndex], ...updates };
-      if (!saved && nextRooms.length > 0) {
-        saved = true;
-        firebaseService.saveState(prev.siteInfo, nextRooms).catch(err => {
-          console.warn("Background saveState notice:", err);
-        });
-      }
-      return { ...prev, rooms: nextRooms };
+      if (!prev.rooms[prev.currentRoomIndex]) return prev;
+      const rooms = [...prev.rooms];
+      rooms[prev.currentRoomIndex] = { ...rooms[prev.currentRoomIndex], ...updates };
+      return { ...prev, rooms };
     });
+    // React batches this with the room update; persistence observes committed state.
+    requestRoomSave();
   };
 
   const createAuditEntry = (action: string, details: string): AuditEntry => ({
@@ -972,7 +969,7 @@ function App() {
     } catch (e) {
       console.error("AI Asset generation error:", e);
       const reason = e instanceof Error ? e.message : String(e);
-      alert(`${reason}\n\nNo assets were added. You can retry or add assets manually.`);
+      alert(`${reason}\n\nNo assets were added and existing assets are unchanged. You can retry or add assets manually.`);
     } finally {
       setProcessing(false);
       setLoadingText('');
@@ -2262,3 +2259,4 @@ function App() {
 }
 
 export default App;
+

@@ -89,7 +89,10 @@ try {
     console.log("✅ Firebase Initialized: DB + Storage + Auth Ready with Database ID:", dbId || "default");
 
     // Optional/Best-effort anonymous authentication to ensure valid credentials inside Firestore/Storage environments
-    onAuthStateChanged(auth, (user: any) => { if (user) resolveAuthReady(); });
+    // Refresh administrator-assigned claims (e.g. assetInspector) before any cloud call runs.
+    onAuthStateChanged(auth, (user: any) => {
+        if (user) user.getIdToken(true).catch(() => {}).finally(() => resolveAuthReady());
+    });
     signInAnonymously(auth)
         .then(() => console.log("🔐 Authenticated anonymously to Firebase"))
         .catch(e => {
@@ -409,7 +412,7 @@ export class FirebaseService {
 
   // Main cloud sync logic
   async saveStateToCloudDirect(siteInfo: SiteInfo, rooms: Room[]): Promise<void> {
-    if (!isConfigured || !db) return;
+    if (!isConfigured || !db) throw new Error("Firebase is not initialized; inspection remains queued.");
     await authReady;
     
     const inspectionId = siteInfo?.name ? siteInfo.name.trim().replace(/\s+/g, '_').toLowerCase() : 'draft_inspection';
@@ -629,6 +632,11 @@ export class FirebaseService {
         rooms: offlineRooms || []
     };
 
+    // Unsynced local edits take precedence over an older cloud snapshot on reload.
+    const pendingQueue = await get('pending_sync_queue') || {};
+    const localId = result.siteInfo?.name?.trim().replace(/\s+/g, '_').toLowerCase();
+    if (localId && pendingQueue[localId]) return result;
+
     if (isConfigured && db && result.siteInfo?.name && navigator.onLine) {
         const inspectionId = result.siteInfo.name.trim().replace(/\s+/g, '_').toLowerCase();
         try {
@@ -761,3 +769,4 @@ export class FirebaseService {
 }
 
 export const firebaseService = new FirebaseService();
+

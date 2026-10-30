@@ -271,8 +271,9 @@ export const detectAssetsWithBoundingBoxes = async (images: { dataUrl: string }[
   if (!AI_PROXY_ENABLED) {
     throw new AssetDetectionError("AI detection is not configured on the server.");
   }
-  if (parts.length === 1) {
-    throw new AssetDetectionError("None of the room photos could be read. Re-take or re-upload the photos and try again.");
+  // Never report a partial/unreadable photo set as a complete inspection.
+  if (parts.length !== images.length + 1) {
+    throw new AssetDetectionError("Some inspection photos could not be read. Replace the affected photos and retry.");
   }
 
   try {
@@ -285,13 +286,22 @@ export const detectAssetsWithBoundingBoxes = async (images: { dataUrl: string }[
       }
     });
 
-    const rawAssets = safeParseJson<any[]>(response.text, []);
-    // An empty result is a valid answer (e.g. an empty room) — return it as-is.
-    return sanitizeDetectedAssets(rawAssets);
+    const rawAssets = safeParseJson<unknown>(response.text, null);
+    if (!Array.isArray(rawAssets)) {
+      throw new AssetDetectionError("The AI returned an invalid asset response. Please retry; existing assets are unchanged.");
+    }
+    // A valid empty array means no assets were detected, not a reason to fabricate records.
+    // Items are validated individually so one malformed detection doesn't discard the rest.
+    const sanitized = sanitizeDetectedAssets(rawAssets);
+    if (rawAssets.length > 0 && sanitized.length === 0) {
+      throw new AssetDetectionError("The AI returned an invalid asset response. Please retry; existing assets are unchanged.");
+    }
+    return sanitized;
   } catch (error) {
+    if (error instanceof AssetDetectionError) throw error;
     console.error("Asset detection API call failed:", error);
     const reason = error instanceof Error ? error.message : String(error);
-    throw new AssetDetectionError(`AI asset detection failed: ${reason}`);
+    throw new AssetDetectionError(`AI asset detection failed: ${reason}. Existing assets are unchanged.`);
   }
 };
 
@@ -1648,4 +1658,5 @@ Instructions:
 
   throw new Error("Empty response from semantic graph traversal.");
 };
+
 
