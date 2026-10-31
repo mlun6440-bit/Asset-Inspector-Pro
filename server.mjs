@@ -94,7 +94,8 @@ async function proxyGemini(req, res) {
 async function serveStatic(req, res) {
   const urlPath = decodeURIComponent(new URL(req.url, 'http://x').pathname);
   let filePath = path.normalize(path.join(DIST, urlPath));
-  if (!filePath.startsWith(DIST)) {
+  // Compare with a trailing separator so sibling folders like dist-ssr/ can't be reached
+  if (filePath !== DIST && !filePath.startsWith(DIST + path.sep)) {
     res.writeHead(403).end();
     return;
   }
@@ -113,7 +114,21 @@ async function serveStatic(req, res) {
   }
 }
 
+// Baseline security headers for every response. The CSP is deliberately narrow (no framing,
+// plugins or <base> hijacking) so it can't break the CDN scripts, Maps or Firebase connections.
+function setSecurityHeaders(req, res) {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Content-Security-Policy', "frame-ancestors 'none'; object-src 'none'; base-uri 'self'");
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(self), microphone=(self), geolocation=(self)');
+  if (req.headers['x-forwarded-proto'] === 'https') {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
+}
+
 http.createServer(async (req, res) => {
+  setSecurityHeaders(req, res);
   try {
     if (req.url.startsWith(PROXY_PREFIX + '/')) await proxyGemini(req, res);
     else if (req.url === '/api/live-token') {

@@ -488,7 +488,8 @@ function App() {
                               cost: a.cost || '0',
                               age: a.age || 'Unknown',
                               rul: a.rul || 'Unknown',
-                              verified: true,
+                              // AI-extracted from an uploaded document: needs inspector review like any AI finding
+                              verified: false,
                               aiDetected: true
                           }));
                           

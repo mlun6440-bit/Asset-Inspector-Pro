@@ -35,7 +35,10 @@ export default defineConfig(({ mode }) => {
     return {
       server: {
         port: 3000,
-        host: '0.0.0.0',
+        // Localhost only by default: the dev proxy attaches GEMINI_API_KEY and skips the inspector
+        // check, so exposing it on the network would let anyone nearby use the key.
+        // Set DEV_HOST=0.0.0.0 to test from a phone on a trusted network.
+        host: env.DEV_HOST || 'localhost',
         // Dev-only Gemini proxy: the key is attached here, inside the Node dev server,
         // so it never appears in browser code. Production uses server.mjs.
         proxy: {
