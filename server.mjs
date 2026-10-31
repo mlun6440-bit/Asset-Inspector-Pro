@@ -13,7 +13,7 @@ import http from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { authorizeAiRequest, handleLiveToken } from './server/aiGateway.mjs';
+import { authorizeAiRequest, checkRateLimit, handleLiveToken, isAllowedGeminiPath } from './server/aiGateway.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.join(__dirname, 'dist');
@@ -22,7 +22,6 @@ const API_KEY = process.env.GEMINI_API_KEY || '';
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '';
 const UPSTREAM = 'https://generativelanguage.googleapis.com';
 const PROXY_PREFIX = '/api/gemini';
-const ALLOWED_UPSTREAM_PATHS = [/^\/v1beta\//, /^\/upload\/v1beta\//];
 const MAX_BODY_BYTES = 60 * 1024 * 1024; // room for several base64 photos
 const REQUIRE_INSPECTOR = process.env.GEMINI_PROXY_AUTH !== 'off';
 
@@ -59,11 +58,12 @@ async function proxyGemini(req, res) {
     return;
   }
   const upstreamPath = req.url.slice(PROXY_PREFIX.length) || '/';
-  if (!ALLOWED_UPSTREAM_PATHS.some((re) => re.test(upstreamPath))) {
+  if (!isAllowedGeminiPath(upstreamPath)) {
     res.writeHead(404).end('Not found');
     return;
   }
-  if (!(await authorizeAiRequest(req, res, { required: REQUIRE_INSPECTOR }))) return;
+  const identity = await authorizeAiRequest(req, res, { required: REQUIRE_INSPECTOR });
+  if (!identity || !checkRateLimit(res, 'generate', identity)) return;
   if (!API_KEY) {
     res.writeHead(503, { 'content-type': 'application/json' })
       .end(JSON.stringify({ error: { message: 'AI is not configured on the server (GEMINI_API_KEY missing).' } }));
@@ -133,7 +133,10 @@ http.createServer(async (req, res) => {
     if (req.url.startsWith(PROXY_PREFIX + '/')) await proxyGemini(req, res);
     else if (req.url === '/api/live-token') {
       if (ALLOWED_ORIGIN && req.headers.origin && req.headers.origin !== ALLOWED_ORIGIN) res.writeHead(403).end('Origin not allowed');
-      else if (await authorizeAiRequest(req, res, { required: REQUIRE_INSPECTOR })) await handleLiveToken(req, res, { apiKey: API_KEY });
+      else {
+        const identity = await authorizeAiRequest(req, res, { required: REQUIRE_INSPECTOR });
+        if (identity && checkRateLimit(res, 'liveToken', identity)) await handleLiveToken(req, res, { apiKey: API_KEY });
+      }
     }
     else await serveStatic(req, res);
   } catch (err) {

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   memory: new Map<string, any>(),
-  setDoc: vi.fn(), commit: vi.fn(), getDoc: vi.fn(),
+  setDoc: vi.fn(), commit: vi.fn(), getDoc: vi.fn(), signOut: vi.fn(async () => {}), cleared: false,
 }));
 vi.mock('firebase/app', () => ({ initializeApp: () => ({}) }));
 vi.mock('firebase/auth', () => {
@@ -12,6 +12,7 @@ vi.mock('firebase/auth', () => {
     signInAnonymously: async () => ({ user }),
     onAuthStateChanged: (_auth: unknown, callback: (u: unknown) => void) => { callback(user); return () => {}; },
     onIdTokenChanged: () => () => {},
+    signOut: mocks.signOut,
   };
 });
 vi.mock('firebase/storage', () => ({ getStorage: () => ({}), ref: vi.fn(), uploadString: vi.fn(), getDownloadURL: vi.fn() }));
@@ -24,7 +25,7 @@ vi.mock('firebase/firestore', () => ({
 vi.mock('idb-keyval', () => ({
   get: async (key: string) => structuredClone(mocks.memory.get(key)),
   set: async (key: string, value: any) => { mocks.memory.set(key, structuredClone(value)); },
-  clear: vi.fn(), del: vi.fn(),
+  clear: vi.fn(async () => { mocks.memory.clear(); mocks.cleared = true; }), del: vi.fn(),
 }));
 import { FirebaseService } from '../services/firebaseService';
 const site = { name: 'Test Site', address: '', numRooms: 1 } as any;
@@ -67,5 +68,17 @@ describe('cloud sync failure retention', () => {
     mocks.getDoc.mockResolvedValue({ exists: () => true, data: () => ({ siteInfo: site, rooms: [] }) });
     expect((await new FirebaseService().loadState()).rooms).toEqual(rooms);
     expect(mocks.getDoc).not.toHaveBeenCalled();
+  });
+});
+
+describe('sign out and clear device', () => {
+  it('signs out and removes local drafts, catalogue, queue and browser storage', async () => {
+    mocks.memory.set('rooms', rooms);
+    mocks.memory.set('pending_sync_queue', { test_site: {} });
+    localStorage.setItem('inspector_profile', '{}');
+    await new FirebaseService().signOutAndClearDevice();
+    expect(mocks.signOut).toHaveBeenCalled();
+    expect(mocks.cleared).toBe(true);
+    expect(localStorage.getItem('inspector_profile')).toBeNull();
   });
 });

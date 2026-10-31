@@ -6,7 +6,7 @@ import { firebaseService } from './services/firebaseService';
 import { detectAssetsWithBoundingBoxes, cropImage, summarizeConversation, analyzeDocument, extractAssetsFromVendorRegister } from './services/geminiService';
 import { usePresenceSession } from './hooks/usePresenceSession';
 import { useRoomAutosave } from './hooks/useRoomAutosave';
-import { ASSET_EXPORT_HEADERS, assetExportRow, csvCell, reviewStatus } from './services/assetExport';
+import { ASSET_EXPORT_HEADERS, assetExportRow, buildWorkbookSheets, csvCell, reviewStatus } from './services/assetExport';
 import { ChatBot } from './components/ChatBot';
 import { ArchitecturalReconstruction } from './components/ArchitecturalReconstruction';
 import { WelcomeView } from './components/WelcomeView';
@@ -1032,43 +1032,32 @@ function App() {
 
   // --- Export Functions ---
 
-  const exportToExcel = () => {
-    const XLSX = (window as any).XLSX;
-    if (!XLSX) return alert("Export library not loaded");
-
-    const wb = XLSX.utils.book_new();
-
-    appState.rooms.forEach(room => {
-        if (room.assets.length === 0) return;
-        const data = [
-            [...ASSET_EXPORT_HEADERS, 'Last Action'],
-            ...room.assets.map(a => {
-                const lastLog = a.auditTrail && a.auditTrail.length > 0 ? a.auditTrail[a.auditTrail.length - 1] : null;
-                const lastAction = lastLog ? `${lastLog.action} (${lastLog.actor})` : 'N/A';
-                return [...assetExportRow(a, isBuildingFabric(a.category)), lastAction];
-            })
-        ];
-        const ws = XLSX.utils.aoa_to_sheet(data);
-        const safeName = (room.roomName || 'Room').substring(0, 31).replace(/[\[\]\*\?\/\\\:]/g, '');
-        XLSX.utils.book_append_sheet(wb, ws, safeName);
-    });
-
-    const summaryData = [
-        ['Site Name', appState.siteInfo.name],
-        ['Address', appState.siteInfo.address],
-        ['Site Notes / Executive Summary', appState.siteInfo.notes || '']
-    ];
-    const wsSummary = XLSX.utils.aoa_to_sheet(summaryData);
-    XLSX.utils.book_append_sheet(wb, wsSummary, "Site Notes");
-
-    XLSX.writeFile(wb, `${appState.siteInfo.name}_Assessment.xlsx`);
+  const exportToExcel = async () => {
+    try {
+      // Bundled from npm and loaded on demand (no CDN script)
+      const { default: writeXlsxFile } = await import('write-excel-file/browser');
+      const sheets = buildWorkbookSheets(appState.siteInfo, appState.rooms, isBuildingFabric);
+      await writeXlsxFile(sheets.map(({ sheet, data }) => ({ sheet, data: data.map(row => row.map(v => (v === '' ? null : v))) })))
+        .toFile(`${appState.siteInfo.name}_Assessment.xlsx`);
+    } catch (err) {
+      console.error("Excel export failed:", err);
+      alert("Excel export failed. Please try again.");
+    }
   };
 
-  const exportToPDF = () => {
-      const jspdf = (window as any).jspdf;
-      if (!jspdf) return alert("PDF library not loaded");
-      
-      const doc = new jspdf.jsPDF('l', 'mm', 'a4');
+  const exportToPDF = async () => {
+      let jsPDF: typeof import('jspdf').jsPDF;
+      let autoTable: typeof import('jspdf-autotable').autoTable;
+      try {
+          // Bundled from npm and loaded on demand (no CDN script)
+          ({ jsPDF } = await import('jspdf'));
+          ({ autoTable } = await import('jspdf-autotable'));
+      } catch (err) {
+          console.error("PDF library failed to load:", err);
+          return alert("PDF export failed to load. Please try again.");
+      }
+
+      const doc = new jsPDF('l', 'mm', 'a4');
       const pageWidth = doc.internal.pageSize.getWidth();
       const pageHeight = doc.internal.pageSize.getHeight();
       
@@ -1140,7 +1129,7 @@ function App() {
                   startY = 20;
               }
 
-              (doc as any).autoTable({
+              autoTable(doc, {
                   startY: startY,
                   head: [['Category', 'Description', 'Condition', 'Risk', 'Age', 'Justification', 'Notes', 'Qty', 'Cost', 'RUL', 'Review']],
                   body: room.assets.map(a => [
@@ -1303,6 +1292,23 @@ function App() {
       }
   };
   
+  // For shared or lost devices: inspections are stored unencrypted in this browser until cleared.
+  const handleSignOutAndClear = async () => {
+    const unsynced = await firebaseService.getPendingQueueCount().catch(() => 0);
+    const warning = unsynced > 0
+      ? `${unsynced} inspection(s) have NOT synced to the cloud and exist only on this device. Signing out will permanently delete them.\n\nSign out and delete anyway?`
+      : "Sign out and remove all inspection data and photos stored on this device? Data already synced to the cloud is not affected.";
+    if (!window.confirm(warning)) return;
+    setProcessing(true);
+    setLoadingText("Signing out and clearing this device...");
+    try {
+      await firebaseService.signOutAndClearDevice();
+    } catch (err) {
+      console.error("Sign-out cleanup failed:", err);
+    }
+    window.location.href = window.location.origin;
+  };
+
   const handleReset = async () => {
     if (window.confirm("Delete ALL local data and start a new assessment? (Cloud data is preserved in Firestore)")) {
         setProcessing(true);
@@ -1843,6 +1849,15 @@ function App() {
                           Local DB
                       </div>
                   )}
+
+                  <button
+                      onClick={handleSignOutAndClear}
+                      className="px-3 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 shadow-sm border bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
+                      title="Sign out and remove all inspection data stored on this device"
+                  >
+                      <span className="material-icons text-sm">logout</span>
+                      <span>Sign out</span>
+                  </button>
 
                   <button
                       onClick={() => setIsMobileMode(!isMobileMode)}

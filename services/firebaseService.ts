@@ -1,8 +1,9 @@
 
 import { initializeApp } from "firebase/app";
+import { initializeAppCheck, ReCaptchaEnterpriseProvider } from "firebase/app-check";
 import { getFirestore, doc, setDoc, getDoc, collection, writeBatch, getDocs, onSnapshot, deleteDoc } from "firebase/firestore";
 import { getStorage, ref, uploadString, getDownloadURL } from "firebase/storage";
-import { getAuth, signInAnonymously, onAuthStateChanged, onIdTokenChanged } from "firebase/auth";
+import { getAuth, signInAnonymously, onAuthStateChanged, onIdTokenChanged, signOut } from "firebase/auth";
 import { get, set, clear, del } from 'idb-keyval';
 import { Room, SiteInfo } from '../types';
 import appletConfig from "../firebase-applet-config.json";
@@ -81,6 +82,21 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
 
 try {
     const app = initializeApp(firebaseConfig);
+
+    // Firebase App Check: proves requests come from this app, so the public Firebase config can't
+    // be used from scripts to create accounts or hit Firestore/Storage. Enabled when a reCAPTCHA
+    // Enterprise site key is configured; enforce it per product in the Firebase console afterwards.
+    const appCheckSiteKey = (import.meta as any).env?.VITE_FIREBASE_APPCHECK_SITE_KEY;
+    if (appCheckSiteKey && typeof window !== 'undefined') {
+        if ((import.meta as any).env?.VITE_FIREBASE_APPCHECK_DEBUG === 'true') {
+            // Local development only: prints a debug token to register in the Firebase console
+            (self as any).FIREBASE_APPCHECK_DEBUG_TOKEN = true;
+        }
+        initializeAppCheck(app, {
+            provider: new ReCaptchaEnterpriseProvider(appCheckSiteKey),
+            isTokenAutoRefreshEnabled: true,
+        });
+    }
     const dbId = appletConfig.firestoreDatabaseId;
     db = dbId ? getFirestore(app, dbId) : getFirestore(app);
     storage = getStorage(app);
@@ -767,6 +783,41 @@ export class FirebaseService {
         await deleteDoc(docRef);
     } catch (e) {
         console.warn("Failed to remove presence:", e);
+    }
+  }
+
+  /**
+   * Signs out and removes every inspection copy this browser holds: the IndexedDB drafts,
+   * catalogue and sync queue, browser storage, the /api sign-in cookie and Firebase's own
+   * local auth/cache databases. Cloud data is untouched. Callers must warn about unsynced
+   * items first (getPendingQueueCount) because those exist only on this device.
+   */
+  async signOutAndClearDevice(): Promise<void> {
+    try {
+      if (auth) await signOut(auth);
+    } catch (e) {
+      console.warn("Firebase sign-out failed; clearing local data anyway:", e);
+    }
+    await clear();
+    try { localStorage.clear(); } catch {}
+    try { sessionStorage.clear(); } catch {}
+    if (typeof document !== 'undefined') {
+      document.cookie = 'aip_id_token=; Path=/api; Max-Age=0; SameSite=Strict';
+    }
+    // Firebase keeps auth state and (if enabled) a Firestore cache in its own databases
+    if (typeof indexedDB !== 'undefined' && typeof indexedDB.databases === 'function') {
+      try {
+        const databases = await indexedDB.databases();
+        await Promise.all(databases
+          .map(d => d.name)
+          .filter((name): name is string => Boolean(name) && (name === 'keyval-store' || name.startsWith('firebase') || name.startsWith('firestore')))
+          .map(name => new Promise<void>(resolve => {
+            const request = indexedDB.deleteDatabase(name);
+            request.onsuccess = request.onerror = request.onblocked = () => resolve();
+          })));
+      } catch (e) {
+        console.warn("Could not enumerate local databases:", e);
+      }
     }
   }
 

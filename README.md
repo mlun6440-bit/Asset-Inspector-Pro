@@ -39,7 +39,15 @@ npm run build
 
 ## Runtime internet dependencies
 
-Tailwind CSS, SheetJS (Excel export), jsPDF and Material Icons load from public CDNs in
-`index.html`. A corporate content-security policy that blocks those hosts will break styling and
-export; bundle them from npm if that applies. The `aistudiocdn.com` importmap in `index.html` is only
-used by Google AI Studio's preview; Vite bundles every import itself and ignores it.
+Tailwind CSS and Material Icons load from public CDNs in `index.html`; a corporate
+content-security policy that blocks those hosts will break styling. Excel and PDF export are
+bundled from npm (`write-excel-file`, `jspdf`, `jspdf-autotable`) and load on demand. The
+`aistudiocdn.com` importmap in `index.html` is only used by Google AI Studio's preview; Vite bundles
+every import itself and ignores it.
+
+## Security settings
+
+See `.env.example` for: App Check (`VITE_FIREBASE_APPCHECK_SITE_KEY`), AI usage limits
+(`AI_RATE_PER_MINUTE`, `AI_RATE_PER_DAY`, `LIVE_TOKENS_PER_HOUR`), the Gemini model allow-list
+(`GEMINI_ALLOWED_MODELS`) and the dev-server host (`DEV_HOST`). "Sign out" in the header removes
+every inspection copy stored on the device (it warns first if anything hasn't synced).
