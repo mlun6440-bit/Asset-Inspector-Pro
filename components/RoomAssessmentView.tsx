@@ -2,6 +2,7 @@ import React, { useRef, useState } from 'react';
 import { Camera, ImagePlus, Trash2, ZoomIn, Sparkles, UploadCloud, FileImage, ShieldAlert } from 'lucide-react';
 import { Room, Asset } from '../types';
 import { ASSET_CATEGORIES, CONDITION_OPTIONS, RISK_OPTIONS, RISK_COLORS } from '../constants';
+import { removeRoomImage } from '../services/roomImages';
 
 interface RoomAssessmentViewProps {
   currentRoomIndex: number;
@@ -65,10 +66,12 @@ export const RoomAssessmentView: React.FC<RoomAssessmentViewProps> = ({
     e.stopPropagation();
     setIsDragging(false);
 
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+    // Drag-and-drop bypasses the input's accept="image/*" filter
+    const imageFiles = Array.from(e.dataTransfer.files || []).filter((f: File) => f.type.startsWith('image/'));
+    if (imageFiles.length > 0) {
       const syntheticEvent = {
         target: {
-          files: e.dataTransfer.files
+          files: imageFiles
         }
       } as unknown as React.ChangeEvent<HTMLInputElement>;
       handleImageUpload(syntheticEvent);
@@ -88,7 +91,7 @@ export const RoomAssessmentView: React.FC<RoomAssessmentViewProps> = ({
       },
       {
         name: "HVAC Rooftop Unit AHU-02.jpg",
-        dataUrl: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='800' height='600' viewBox='0 0 800 600'><rect width='800' height='600' fill='%230f172a'/><rect x='100' y='120' width='600' height='360' rx='12' fill='%231e293b' stroke='%2364748b' stroke-width='6'/><circle cx='260' cy='300' r='100' fill='%23334155' stroke='%2338bdf8' stroke-width='6'/><circle cx='540' cy='300' r='100' fill='%23334155' stroke='%2338bdf8' stroke-width='6'/><path d='M260 200 L260 400 M160 300 L360 300' stroke='%2394a3b8' stroke-width='4'/><path d='M540 200 L540 400 M440 300 L640 300' stroke='%2394a3b8' stroke-width='4'/><rect x='320' y='60' width='160' height='60' fill='%23475569'/><text x='400' y='530' font-family='sans-serif' font-size='20' font-weight='bold' fill='%2338bdf8' text-anchor='middle'>ROOFTOP HVAC AHU-02 %26 CHILLER UNIT</text></svg>"
+        dataUrl: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='800' height='600' viewBox='0 0 800 600'><rect width='800' height='600' fill='%230f172a'/><rect x='100' y='120' width='600' height='360' rx='12' fill='%231e293b' stroke='%2364748b' stroke-width='6'/><circle cx='260' cy='300' r='100' fill='%23334155' stroke='%2338bdf8' stroke-width='6'/><circle cx='540' cy='300' r='100' fill='%23334155' stroke='%2338bdf8' stroke-width='6'/><path d='M260 200 L260 400 M160 300 L360 300' stroke='%2394a3b8' stroke-width='4'/><path d='M540 200 L540 400 M440 300 L640 300' stroke='%2394a3b8' stroke-width='4'/><rect x='320' y='60' width='160' height='60' fill='%23475569'/><text x='400' y='530' font-family='sans-serif' font-size='20' font-weight='bold' fill='%2338bdf8' text-anchor='middle'>ROOFTOP HVAC AHU-02 %26amp; CHILLER UNIT</text></svg>"
       }
     ];
 
@@ -151,7 +154,28 @@ export const RoomAssessmentView: React.FC<RoomAssessmentViewProps> = ({
           <span className="material-icons">door_front</span>
           <h3 className="font-bold">Room Information</h3>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
+          <input 
+            value={currentRoom.floorLevel || ''} 
+            onChange={(e) => updateCurrentRoom({ floorLevel: e.target.value })}
+            placeholder="Level (e.g. G, L1, Roof)"
+            aria-label="Level"
+            className="px-4 py-2 border rounded-lg bg-gray-50 text-black placeholder-gray-500 text-sm focus:ring-2 focus:ring-indigo-500"
+          />
+          <input 
+            value={currentRoom.roomCode || ''} 
+            onChange={(e) => updateCurrentRoom({ roomCode: e.target.value })}
+            placeholder="Room Code"
+            aria-label="Room Code"
+            className="px-4 py-2 border rounded-lg bg-gray-50 text-black placeholder-gray-500 text-sm focus:ring-2 focus:ring-indigo-500"
+          />
+          <input 
+            value={currentRoom.roomType || ''} 
+            onChange={(e) => updateCurrentRoom({ roomType: e.target.value })}
+            placeholder="Room Type (e.g. Office, Toilet)"
+            aria-label="Room Type"
+            className="px-4 py-2 border rounded-lg bg-gray-50 text-black placeholder-gray-500 text-sm focus:ring-2 focus:ring-indigo-500"
+          />
           <input 
             value={currentRoom.buildingName || ''} 
             onChange={(e) => updateCurrentRoom({ buildingName: e.target.value })}
@@ -209,7 +233,7 @@ export const RoomAssessmentView: React.FC<RoomAssessmentViewProps> = ({
                 </button>
                 <button 
                   type="button"
-                  onClick={() => updateCurrentRoom({ images: currentRoom.images.filter(i => i.id !== img.id) })}
+                  onClick={() => updateCurrentRoom(removeRoomImage(currentRoom, img.id))}
                   className="p-1.5 bg-red-600 text-white rounded-full hover:bg-red-700 shadow transition"
                   title="Remove image"
                 >
@@ -430,7 +454,7 @@ export const RoomAssessmentView: React.FC<RoomAssessmentViewProps> = ({
                     </td>
                     <td className="px-4 py-3">
                       <select
-                        value={asset.condition}
+                        value={asset.condition || ''}
                         onChange={(e) => updateAsset(asset.id, 'condition', e.target.value)}
                         className={`rounded px-2 py-1 text-xs font-bold focus:outline-none ${
                           asset.condition === 'Good' || asset.condition === 'Excellent' ? 'bg-green-100 text-green-800' :
@@ -438,13 +462,14 @@ export const RoomAssessmentView: React.FC<RoomAssessmentViewProps> = ({
                           'bg-red-100 text-red-800'
                         }`}
                       >
+                        <option value="" disabled>Not assessed</option>
                         {CONDITION_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
                       </select>
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-1 group/risk">
                         <select
-                          value={asset.riskRating || 'Low'}
+                          value={asset.riskRating || ''}
                           onChange={(e) => updateAsset(asset.id, 'riskRating', e.target.value)}
                           className={`rounded px-2 py-1 text-xs font-bold border-0 cursor-pointer focus:outline-none ${
                             asset.riskRating === 'Extreme' ? 'bg-red-600 text-white' :
@@ -453,6 +478,7 @@ export const RoomAssessmentView: React.FC<RoomAssessmentViewProps> = ({
                             'bg-green-100 text-green-800'
                           }`}
                         >
+                          <option value="" disabled>Not assessed</option>
                           {RISK_OPTIONS.map(r => <option key={r} value={r}>{r}</option>)}
                         </select>
                         {asset.riskHistory && asset.riskHistory.length > 0 && (

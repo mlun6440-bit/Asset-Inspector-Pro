@@ -151,20 +151,22 @@ export const EditAssetModal: React.FC<EditAssetModalProps> = ({
               <div>
                 <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Condition</label>
                 <select 
-                  value={localAsset.condition}
+                  value={localAsset.condition || ''}
                   onChange={(e) => handleFieldChange('condition', e.target.value)}
                   className="w-full px-2 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white text-xs text-black"
                 >
+                  <option value="" disabled>Not assessed</option>
                   {CONDITION_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
               </div>
               <div>
                 <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Risk Rating</label>
                 <select 
-                  value={localAsset.riskRating || 'Low'}
+                  value={localAsset.riskRating || ''}
                   onChange={(e) => handleFieldChange('riskRating', e.target.value)}
                   className="w-full px-2 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white text-xs text-black"
                 >
+                  <option value="" disabled>Not assessed</option>
                   {RISK_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
               </div>

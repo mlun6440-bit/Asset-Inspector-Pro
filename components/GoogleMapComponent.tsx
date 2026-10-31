@@ -255,7 +255,9 @@ export const GoogleMapComponent: React.FC<GoogleMapComponentProps> = ({
       )}
 
       {/* Main Google Maps Render Container */}
+      {/* Keyed by apiKey so saving a new key reloads the provider with it */}
       <APIProvider
+        key={apiKey}
         apiKey={apiKey}
         libraries={['places', 'marker', 'geocoding', 'core']}
       >
@@ -301,8 +303,8 @@ export const GoogleMapComponent: React.FC<GoogleMapComponentProps> = ({
                 key={site.id}
                 position={{ lat: site.latitude, lng: site.longitude }}
                 onClick={() => {
+                  // Open the info window only; its "View Inspection" button navigates
                   setActiveMarkerId(site.id);
-                  if (onSelectSite) onSelectSite(site.id);
                 }}
                 title={site.name}
               >

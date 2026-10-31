@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { firebaseService } from '../services/firebaseService';
 
 export interface InspectorProfile {
@@ -24,7 +24,15 @@ export function usePresenceSession({
 }: UsePresenceSessionProps) {
   const [activePresences, setActivePresences] = useState<any[]>([]);
   const [hasEditLock, setHasEditLock] = useState<boolean>(true);
-  const [isEditingPresence, setIsEditingPresence] = useState<boolean>(true);
+  // Start as a viewer; the first presence snapshot claims control if nobody else is editing
+  const [isEditingPresence, setIsEditingPresenceState] = useState<boolean>(false);
+  // Time of our latest edit claim; the most recent claim wins a conflict
+  const editClaimedAtRef = useRef<number>(0);
+
+  const setIsEditingPresence = useCallback((val: boolean) => {
+    if (val) editClaimedAtRef.current = Date.now();
+    setIsEditingPresenceState(val);
+  }, []);
 
   const getAvatarColor = useCallback((str: string) => {
     let hash = 0;
@@ -65,11 +73,11 @@ export function usePresenceSession({
     }
 
     // 1. Immediately publish initial presence
-    firebaseService.updatePresence(currentInspectionId, inspectorProfile.userId, inspectorProfile.email, isEditingPresence);
+    firebaseService.updatePresence(currentInspectionId, inspectorProfile.userId, inspectorProfile.email, isEditingPresence, editClaimedAtRef.current);
 
     // 2. Set up heartbeat timer (every 5 seconds)
     const heartbeat = setInterval(() => {
-      firebaseService.updatePresence(currentInspectionId, inspectorProfile.userId, inspectorProfile.email, isEditingPresence);
+      firebaseService.updatePresence(currentInspectionId, inspectorProfile.userId, inspectorProfile.email, isEditingPresence, editClaimedAtRef.current);
     }, 5000);
 
     // 3. Listen to all presences on this site
@@ -83,15 +91,25 @@ export function usePresenceSession({
       });
       setActivePresences(activeOthers);
 
-      // 4. Resolve edit lock conflicts
+      // 4. Resolve edit lock conflicts deterministically: the most recent claim wins,
+      // ties broken by userId, so exactly one editor keeps control
+      const ourClaim = editClaimedAtRef.current;
+      const outranksUs = (p: any) => {
+        const theirClaim = Number(p.editClaimedAt) || 0;
+        return theirClaim > ourClaim || (theirClaim === ourClaim && String(p.userId) > inspectorProfile.userId);
+      };
       const otherEditors = activeOthers.filter((p) => p.isEditing);
-      if (otherEditors.length > 0) {
-        if (isEditingPresence) {
-          setIsEditingPresence(false);
-          setHasEditLock(false);
+      if (!isEditingPresence) {
+        if (otherEditors.length === 0) {
+          // Nobody else is editing any more; take control back
+          setIsEditingPresence(true);
+          setHasEditLock(true);
         } else {
           setHasEditLock(false);
         }
+      } else if (otherEditors.some(outranksUs)) {
+        setIsEditingPresenceState(false);
+        setHasEditLock(false);
       } else {
         setHasEditLock(true);
       }
@@ -101,15 +119,15 @@ export function usePresenceSession({
       clearInterval(heartbeat);
       if (unsubscribe) unsubscribe();
     };
-  }, [currentInspectionId, effectiveIsOnline, viewMode, appView, inspectorProfile.userId, inspectorProfile.email, isEditingPresence]);
+  }, [currentInspectionId, effectiveIsOnline, viewMode, appView, inspectorProfile.userId, inspectorProfile.email, isEditingPresence, setIsEditingPresence]);
 
   const requestControl = useCallback(() => {
     setIsEditingPresence(true);
     setHasEditLock(true);
     if (currentInspectionId) {
-      firebaseService.updatePresence(currentInspectionId, inspectorProfile.userId, inspectorProfile.email, true);
+      firebaseService.updatePresence(currentInspectionId, inspectorProfile.userId, inspectorProfile.email, true, editClaimedAtRef.current);
     }
-  }, [currentInspectionId, inspectorProfile.userId, inspectorProfile.email]);
+  }, [currentInspectionId, inspectorProfile.userId, inspectorProfile.email, setIsEditingPresence]);
 
   return {
     activePresences,

@@ -166,15 +166,17 @@ export const RawDetectedAssetSchema = z.object({
   id: z.string().optional(),
   category: z.string().default('General Building'),
   description: z.string().default('Asset detected'),
-  condition: z.string().default('Average'),
-  riskRating: z.string().default('Low'),
+  // Evidence fields have no defaults: a value the model didn't give stays blank for the
+  // inspector to fill rather than being invented (see AGENTS.md "Never Fabricate Register Data").
+  condition: z.string().optional(),
+  riskRating: z.string().optional(),
   justification: z.string().default('Inspected via AI vision'),
   quantity: z.union([z.string(), z.number()]).default('1'),
-  cost: z.union([z.string(), z.number()]).default(0),
-  age: z.union([z.string(), z.number()]).default(0),
-  rul: z.union([z.string(), z.number()]).default(10),
+  cost: z.union([z.string(), z.number()]).optional(),
+  age: z.union([z.string(), z.number()]).optional(),
+  rul: z.union([z.string(), z.number()]).optional(),
   notes: z.string().optional().default(''),
-  sourceImageIndex: z.number().optional().default(0),
+  sourceImageIndex: z.number().optional(),
   appearsInImageIndices: z.array(z.number()).optional(),
   boundingBox: z.object({
     x: z.number().default(0),
@@ -207,11 +209,19 @@ export function safeParseJson<T>(rawText: string | undefined | null, fallback: T
 }
 
 /**
- * Sanitizes and validates detected assets against strict domain bounds
+ * Sanitizes and validates detected assets against strict domain bounds.
+ *
+ * A model-supplied `id` is kept only when it matches one of `existingAssetIds` (a re-inspection
+ * of a known asset), and only once per batch. Any other id gets a fresh UUID, so the model can
+ * never mint an ID that collides with an asset elsewhere in the register.
  */
-export function sanitizeDetectedAssets(rawJson: unknown): Asset[] {
-  const parsed = RawDetectedAssetArraySchema.safeParse(rawJson);
-  const items = parsed.success ? parsed.data : [];
+export function sanitizeDetectedAssets(rawJson: unknown, existingAssetIds: ReadonlySet<string> = new Set()): Asset[] {
+  const claimedIds = new Set<string>();
+  // Validate item-by-item so one malformed detection doesn't discard the whole batch
+  const items = (Array.isArray(rawJson) ? rawJson : []).flatMap((raw) => {
+    const parsed = RawDetectedAssetSchema.safeParse(raw);
+    return parsed.success ? [parsed.data] : [];
+  });
 
   return items.map((a) => {
     // Clamp bounding box dimensions between 0 and 1
@@ -225,20 +235,27 @@ export function sanitizeDetectedAssets(rawJson: unknown): Asset[] {
       : undefined;
 
     const desc = a.description || 'No description provided.';
-    const id = a.id && a.id.trim().length > 0 ? a.id : crypto.randomUUID();
+    const candidateId = a.id?.trim() || '';
+    const isKnownAsset = existingAssetIds.has(candidateId) && !claimedIds.has(candidateId);
+    const id = isKnownAsset ? candidateId : crypto.randomUUID();
+    claimedIds.add(id);
+
+    const missingEvidence = (['condition', 'riskRating', 'cost', 'age', 'rul'] as const)
+      .filter((field) => a[field] === undefined || a[field] === null || String(a[field]).trim() === '');
+    const asText = (value: string | number | undefined) => (value === undefined || value === null ? '' : String(value));
 
     return {
       id,
       name: `${a.category} - ${desc.substring(0, 30)}...`,
       category: a.category,
       description: desc,
-      condition: a.condition || 'Average',
-      riskRating: a.riskRating || 'Low',
+      condition: a.condition || '',
+      riskRating: a.riskRating || '',
       justification: a.justification || 'Visual inspection recorded.',
       quantity: String(a.quantity ?? '1'),
-      cost: String(a.cost ?? '0'),
-      age: String(a.age ?? '0'),
-      rul: String(a.rul ?? '10'),
+      cost: asText(a.cost),
+      age: asText(a.age),
+      rul: asText(a.rul),
       notes: a.notes || '',
       verified: false,
       aiDetected: true,
@@ -249,7 +266,9 @@ export function sanitizeDetectedAssets(rawJson: unknown): Asset[] {
           timestamp: Date.now(),
           actor: 'AI' as const,
           action: 'CREATED',
-          details: 'Detected and validated via Gemini Vision with strict schema.',
+          details: missingEvidence.length > 0
+            ? `Detected via Gemini Vision. AI gave no value for: ${missingEvidence.join(', ')} — needs inspector review.`
+            : 'Detected and validated via Gemini Vision with strict schema.',
         },
       ],
     };

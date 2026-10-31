@@ -134,9 +134,24 @@ export const HealthDashboardView: React.FC<HealthDashboardViewProps> = ({
       assets.forEach((a) => {
         const cat = (a.category || '').toLowerCase();
         let matchedSys: typeof SYSTEM_CATEGORIES[number] = 'Building Fabric';
-        if (cat.includes('electrical') || cat.includes('lighting') || cat.includes('switchboard') || cat.includes('power')) {
+        // Registered categories are "Group,Item": classify by the group first so items like
+        // "Facade" or "Access Control Readers" aren't caught by loose substring checks
+        const group = cat.includes(',') ? cat.split(',')[0] : '';
+        if (group.startsWith('building')) {
+          matchedSys = 'Building Fabric';
+        } else if (group.startsWith('electrical')) {
           matchedSys = 'Electrical';
-        } else if (cat.includes('hvac') || cat.includes('ac') || cat.includes('ventilation') || cat.includes('chiller') || cat.includes('fan')) {
+        } else if (group.startsWith('hvac')) {
+          matchedSys = 'HVAC & Mech';
+        } else if (group.startsWith('plumbing')) {
+          matchedSys = 'Plumbing';
+        } else if (group.startsWith('fire')) {
+          matchedSys = 'Fire & Safety';
+        } else if (group.startsWith('security') || group.startsWith('grounds')) {
+          matchedSys = 'Security & Grounds';
+        } else if (cat.includes('electrical') || cat.includes('lighting') || cat.includes('switchboard') || cat.includes('power')) {
+          matchedSys = 'Electrical';
+        } else if (cat.includes('hvac') || /\bac\b/.test(cat) || cat.includes('ventilation') || cat.includes('chiller') || cat.includes('fan')) {
           matchedSys = 'HVAC & Mech';
         } else if (cat.includes('plumb') || cat.includes('water') || cat.includes('drain') || cat.includes('sink') || cat.includes('toilet')) {
           matchedSys = 'Plumbing';
@@ -254,10 +269,23 @@ export const HealthDashboardView: React.FC<HealthDashboardViewProps> = ({
     };
   }, [roomStats]);
 
+  // Heat-map Y-axis labels: rooms that share a name get their position appended, so two
+  // "Office" rooms show as separate rows instead of overlapping tiles on one row.
+  const roomAxisLabels = useMemo(() => {
+    const nameCounts = new Map<string, number>();
+    filteredRooms.forEach(r => nameCounts.set(r.roomName, (nameCounts.get(r.roomName) || 0) + 1));
+    const labels = new Map<number, string>();
+    filteredRooms.forEach(r => {
+      labels.set(r.originalIndex, (nameCounts.get(r.roomName) || 0) > 1 ? `${r.roomName} (#${r.originalIndex + 1})` : r.roomName);
+    });
+    return labels;
+  }, [filteredRooms]);
+
   // Recharts Scatter Heat Map Dataset (Rooms × Conditions)
   const conditionScatterData = useMemo(() => {
     const data: Array<{
       roomName: string;
+      roomLabel: string;
       condition: ConditionType;
       count: number;
       roomIndex: number;
@@ -304,6 +332,7 @@ export const HealthDashboardView: React.FC<HealthDashboardViewProps> = ({
 
         data.push({
           roomName: r.roomName,
+          roomLabel: roomAxisLabels.get(r.originalIndex) || r.roomName,
           condition: cond,
           count,
           roomIndex: r.originalIndex,
@@ -320,12 +349,13 @@ export const HealthDashboardView: React.FC<HealthDashboardViewProps> = ({
     });
 
     return data;
-  }, [filteredRooms]);
+  }, [filteredRooms, roomAxisLabels]);
 
   // Recharts Systems Heat Map Dataset (Rooms × System Categories)
   const systemScatterData = useMemo(() => {
     const data: Array<{
       roomName: string;
+      roomLabel: string;
       system: string;
       count: number;
       worstCondition: ConditionType;
@@ -348,6 +378,7 @@ export const HealthDashboardView: React.FC<HealthDashboardViewProps> = ({
 
         data.push({
           roomName: r.roomName,
+          roomLabel: roomAxisLabels.get(r.originalIndex) || r.roomName,
           system: sys,
           count: sysInfo.count,
           worstCondition: sysInfo.worstCondition,
@@ -359,7 +390,7 @@ export const HealthDashboardView: React.FC<HealthDashboardViewProps> = ({
     });
 
     return data;
-  }, [filteredRooms]);
+  }, [filteredRooms, roomAxisLabels]);
 
   // Stacked Bar Chart Dataset for Condition Spectrum
   const spectrumBarData = useMemo(() => {
@@ -814,7 +845,7 @@ export const HealthDashboardView: React.FC<HealthDashboardViewProps> = ({
                       />
                       <YAxis
                         type="category"
-                        dataKey="roomName"
+                        dataKey="roomLabel"
                         name="Room"
                         stroke="#94A3B8"
                         tick={{ fill: '#E2E8F0', fontSize: 11 }}
@@ -899,7 +930,7 @@ export const HealthDashboardView: React.FC<HealthDashboardViewProps> = ({
                       />
                       <YAxis
                         type="category"
-                        dataKey="roomName"
+                        dataKey="roomLabel"
                         name="Room"
                         stroke="#94A3B8"
                         tick={{ fill: '#E2E8F0', fontSize: 11 }}

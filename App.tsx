@@ -1,10 +1,12 @@
 
 // Updated Live Sync Configuration
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { SiteInfo, Room, AppState, Asset, ChatMessage, AuditEntry } from './types';
 import { firebaseService } from './services/firebaseService';
 import { detectAssetsWithBoundingBoxes, cropImage, summarizeConversation, analyzeDocument, extractAssetsFromVendorRegister } from './services/geminiService';
 import { usePresenceSession } from './hooks/usePresenceSession';
+import { useRoomAutosave } from './hooks/useRoomAutosave';
+import { ASSET_EXPORT_HEADERS, assetExportRow, buildWorkbookSheets, csvCell, reviewStatus } from './services/assetExport';
 import { ChatBot } from './components/ChatBot';
 import { ArchitecturalReconstruction } from './components/ArchitecturalReconstruction';
 import { WelcomeView } from './components/WelcomeView';
@@ -13,6 +15,7 @@ import { RoomAssessmentView } from './components/RoomAssessmentView';
 import { SmartRoomFinder } from './components/SmartRoomFinder';
 import { AssessmentSummaryView } from './components/AssessmentSummaryView';
 import { AIAgentOS } from './components/AIAgentOS';
+import { RoomBoardView } from './components/RoomBoardView';
 import { HealthDashboardView } from './components/HealthDashboardView';
 import { EditAssetModal } from './components/EditAssetModal';
 import { MobileAppFrame } from './components/MobileAppFrame';
@@ -105,6 +108,7 @@ function App() {
       setHasEditLock,
       isEditingPresence,
       setIsEditingPresence,
+      requestControl,
       getAvatarColor,
       getInitials,
   } = usePresenceSession({
@@ -129,13 +133,19 @@ function App() {
   }, []);
 
   // NEW: Automatic Background Queue Sync Side-Effect
+  const autoSyncInFlightRef = useRef(false);
   useEffect(() => {
     const checkAndSync = async () => {
+        // A previous poll is still pushing the queue; don't start a concurrent upload
+        if (autoSyncInFlightRef.current) return;
+        let startedSync = false;
         try {
             const count = await firebaseService.getPendingQueueCount();
             setPendingQueueCount(count);
             
-            if (effectiveIsOnline && count > 0 && !syncingOfflineData) {
+            if (effectiveIsOnline && count > 0 && !autoSyncInFlightRef.current) {
+                autoSyncInFlightRef.current = true;
+                startedSync = true;
                 setSyncingOfflineData(true);
                 setSyncMessage(`Processing ${count} offline updates...`);
                 
@@ -168,7 +178,10 @@ function App() {
             setSyncMessage('Auto sync failed. Retrying.');
             setTimeout(() => setSyncMessage(''), 3500);
         } finally {
-            setSyncingOfflineData(false);
+            if (startedSync) {
+                autoSyncInFlightRef.current = false;
+                setSyncingOfflineData(false);
+            }
             const finalCount = await firebaseService.getPendingQueueCount();
             setPendingQueueCount(finalCount);
         }
@@ -232,10 +245,15 @@ function App() {
 
   const loadPortfolio = async () => {
       setLoading(true);
-      const data = await firebaseService.getAllInspections();
-      setPortfolioData(data);
-      setViewMode('portfolio');
-      setLoading(false);
+      try {
+          const data = await firebaseService.getAllInspections();
+          setPortfolioData(data);
+          setViewMode('portfolio');
+      } catch (e) {
+          console.error("Failed to load portfolio:", e);
+      } finally {
+          setLoading(false);
+      }
   };
 
   const openInspection = (inspection: any) => {
@@ -463,14 +481,15 @@ function App() {
                               category: a.category || 'Other',
                               description: a.description || 'Unknown Asset',
                               condition: a.condition || 'Unknown',
-                              riskRating: a.riskRating || 'Low',
+                              riskRating: a.riskRating || '',
                               auditTrail: [],
                               justification: a.justification || 'Imported from vendor register',
                               quantity: a.quantity || 1,
                               cost: a.cost || '0',
                               age: a.age || 'Unknown',
                               rul: a.rul || 'Unknown',
-                              verified: true,
+                              // AI-extracted from an uploaded document: needs inspector review like any AI finding
+                              verified: false,
                               aiDetected: true
                           }));
                           
@@ -558,7 +577,16 @@ function App() {
                 });
                 updatedRooms = [...updatedRooms, ...extraRooms];
             } else {
-                // Shrink rooms
+                // Shrink rooms — never silently discard recorded inspection evidence
+                const removedRooms = updatedRooms.slice(appState.siteInfo.numRooms);
+                const roomsWithData = removedRooms.filter(r => (r.assets?.length || 0) > 0 || (r.images?.length || 0) > 0);
+                if (roomsWithData.length > 0) {
+                    alert(`Can't reduce to ${appState.siteInfo.numRooms} rooms: ${roomsWithData.map(r => r.roomName).join(', ')} still contain photos or assets. Remove that data first, or keep the current room count.`);
+                    return;
+                }
+                if (!window.confirm(`Remove ${removedRooms.length} empty room(s): ${removedRooms.map(r => r.roomName).join(', ')}?`)) {
+                    return;
+                }
                 updatedRooms = updatedRooms.slice(0, appState.siteInfo.numRooms);
             }
         }
@@ -590,21 +618,20 @@ function App() {
     firebaseService.saveState(updatedSiteInfo, newRooms);
   };
 
-  const updateCurrentRoom = (updates: Partial<Room>) => {
-    if (!hasEditLock) return;
-    let nextRooms: Room[] = [];
-    let siteInfoForSave: SiteInfo = appState.siteInfo;
+  const requestRoomSave = useRoomAutosave(appState.siteInfo, appState.rooms);
+
+  // `force` is for handlers that have just claimed the edit lock in this same render,
+  // where `hasEditLock` is still the stale value
+  const updateCurrentRoom = (updates: Partial<Room>, force = false) => {
+    if (!hasEditLock && !force) return;
     setAppState(prev => {
-      nextRooms = [...prev.rooms];
-      nextRooms[prev.currentRoomIndex] = { ...nextRooms[prev.currentRoomIndex], ...updates };
-      siteInfoForSave = prev.siteInfo;
-      return { ...prev, rooms: nextRooms };
+      if (!prev.rooms[prev.currentRoomIndex]) return prev;
+      const rooms = [...prev.rooms];
+      rooms[prev.currentRoomIndex] = { ...rooms[prev.currentRoomIndex], ...updates };
+      return { ...prev, rooms };
     });
-    if (nextRooms.length > 0) {
-      firebaseService.saveState(siteInfoForSave, nextRooms).catch(err => {
-        console.warn("Background saveState notice:", err);
-      });
-    }
+    // React batches this with the room update; persistence observes committed state.
+    requestRoomSave();
   };
 
   const createAuditEntry = (action: string, details: string): AuditEntry => ({
@@ -853,7 +880,7 @@ function App() {
 
       if (newImages.length > 0) {
         const updatedImages = [...currentRoom.images, ...newImages];
-        updateCurrentRoom({ images: updatedImages });
+        updateCurrentRoom({ images: updatedImages }, true);
       }
     } catch (err) {
       console.error("Error reading photo upload:", err);
@@ -925,10 +952,17 @@ function App() {
                });
            }
 
+           // Re-inspection: the inspector's record (id, category, description, quantity, cost,
+           // age, notes) stays as entered; the AI only proposes updated condition evidence,
+           // which is flagged unverified for human review.
            finalAssets[existingIndex] = {
                ...existing,
-               ...newA,
-               id: existing.id,
+               condition: newA.condition,
+               riskRating: newA.riskRating,
+               rul: newA.rul,
+               justification: newA.justification,
+               boundingBox: newA.boundingBox ?? existing.boundingBox,
+               sourceImageIndex: newA.sourceImageIndex ?? existing.sourceImageIndex,
                auditTrail: trail,
                riskHistory,
                verified: false,
@@ -942,13 +976,19 @@ function App() {
         }
       }
 
-      updateCurrentRoom({ 
+      updateCurrentRoom({
           assets: finalAssets,
           croppedImages: newCroppedImages
-      });
+      }, true);
+
+      if (detectedAssets.length === 0) {
+          alert("AI found no assets in these photos. Add assets manually if any are present.");
+      }
 
     } catch (e) {
       console.error("AI Asset generation error:", e);
+      const reason = e instanceof Error ? e.message : String(e);
+      alert(`${reason}\n\nNo assets were added and existing assets are unchanged. You can retry or add assets manually.`);
     } finally {
       setProcessing(false);
       setLoadingText('');
@@ -992,57 +1032,32 @@ function App() {
 
   // --- Export Functions ---
 
-  const exportToExcel = () => {
-    const XLSX = (window as any).XLSX;
-    if (!XLSX) return alert("Export library not loaded");
-
-    const wb = XLSX.utils.book_new();
-
-    appState.rooms.forEach(room => {
-        if (room.assets.length === 0) return;
-        const data = [
-            ['Category', 'Description', 'Condition', 'Risk', 'Age (yrs)', 'Justification', 'Notes', 'Qty', 'Cost ($)', 'RUL (yrs)', 'Verified', 'Last Action'],
-            ...room.assets.map(a => {
-                const lastLog = a.auditTrail && a.auditTrail.length > 0 ? a.auditTrail[a.auditTrail.length - 1] : null;
-                const lastAction = lastLog ? `${lastLog.action} (${lastLog.actor})` : 'N/A';
-                const qtyVal = isBuildingFabric(a.category) ? 'N/A' : a.quantity;
-                return [
-                    a.category, 
-                    a.description, 
-                    a.condition, 
-                    a.riskRating || 'Low',
-                    a.age || '',
-                    a.justification, 
-                    a.notes || '', 
-                    qtyVal, 
-                    a.cost, 
-                    a.rul, 
-                    a.verified ? 'Yes' : 'No',
-                    lastAction
-                ];
-            })
-        ];
-        const ws = XLSX.utils.aoa_to_sheet(data);
-        const safeName = (room.roomName || 'Room').substring(0, 31).replace(/[\[\]\*\?\/\\\:]/g, '');
-        XLSX.utils.book_append_sheet(wb, ws, safeName);
-    });
-
-    const summaryData = [
-        ['Site Name', appState.siteInfo.name],
-        ['Address', appState.siteInfo.address],
-        ['Site Notes / Executive Summary', appState.siteInfo.notes || '']
-    ];
-    const wsSummary = XLSX.utils.aoa_to_sheet(summaryData);
-    XLSX.utils.book_append_sheet(wb, wsSummary, "Site Notes");
-
-    XLSX.writeFile(wb, `${appState.siteInfo.name}_Assessment.xlsx`);
+  const exportToExcel = async () => {
+    try {
+      // Bundled from npm and loaded on demand (no CDN script)
+      const { default: writeXlsxFile } = await import('write-excel-file/browser');
+      const sheets = buildWorkbookSheets(appState.siteInfo, appState.rooms, isBuildingFabric);
+      await writeXlsxFile(sheets.map(({ sheet, data }) => ({ sheet, data: data.map(row => row.map(v => (v === '' ? null : v))) })))
+        .toFile(`${appState.siteInfo.name}_Assessment.xlsx`);
+    } catch (err) {
+      console.error("Excel export failed:", err);
+      alert("Excel export failed. Please try again.");
+    }
   };
 
-  const exportToPDF = () => {
-      const jspdf = (window as any).jspdf;
-      if (!jspdf) return alert("PDF library not loaded");
-      
-      const doc = new jspdf.jsPDF('l', 'mm', 'a4');
+  const exportToPDF = async () => {
+      let jsPDF: typeof import('jspdf').jsPDF;
+      let autoTable: typeof import('jspdf-autotable').autoTable;
+      try {
+          // Bundled from npm and loaded on demand (no CDN script)
+          ({ jsPDF } = await import('jspdf'));
+          ({ autoTable } = await import('jspdf-autotable'));
+      } catch (err) {
+          console.error("PDF library failed to load:", err);
+          return alert("PDF export failed to load. Please try again.");
+      }
+
+      const doc = new jsPDF('l', 'mm', 'a4');
       const pageWidth = doc.internal.pageSize.getWidth();
       const pageHeight = doc.internal.pageSize.getHeight();
       
@@ -1114,21 +1129,21 @@ function App() {
                   startY = 20;
               }
 
-              (doc as any).autoTable({
+              autoTable(doc, {
                   startY: startY,
-                  head: [['Category', 'Description', 'Condition', 'Risk', 'Age', 'Justification', 'Notes', 'Qty', 'Cost', 'RUL', 'Verified']],
+                  head: [['Category', 'Description', 'Condition', 'Risk', 'Age', 'Justification', 'Notes', 'Qty', 'Cost', 'RUL', 'Review']],
                   body: room.assets.map(a => [
                       a.category,
                       a.description.substring(0, 40),
-                      a.condition,
-                      a.riskRating || 'Low',
+                      a.condition || '',
+                      a.riskRating || '',
                       a.age || '',
-                      a.justification.substring(0, 40),
+                      (a.justification || '').substring(0, 40),
                       a.notes ? a.notes.substring(0, 40) : '',
                       isBuildingFabric(a.category) ? 'N/A' : a.quantity,
-                      `$${a.cost}`,
-                      `${a.rul} yr`,
-                      a.verified ? 'Yes' : 'No'
+                      a.cost ? `$${a.cost}` : '',
+                      a.rul ? `${a.rul} yr` : '',
+                      reviewStatus(a)
                   ]),
                   theme: 'grid',
                   headStyles: { fillColor: [102, 126, 234] },
@@ -1156,26 +1171,12 @@ function App() {
   };
 
   const exportToCSV = () => {
-      let csvContent = "Building Name,Room Name,Category,Description,Condition,Risk Rating,Age,Justification,Notes,Quantity,Cost,RUL,Verified\n";
+      let csvContent = ['Building Name', 'Room ID', 'Level', 'Room Code', 'Room Name', 'Room Type', ...ASSET_EXPORT_HEADERS].map(csvCell).join(",") + "\n";
       
       appState.rooms.forEach(room => {
           room.assets.forEach(a => {
-              const qtyVal = isBuildingFabric(a.category) ? "N/A" : a.quantity;
-              const row = [
-                  appState.siteInfo.name,
-                  room.roomName,
-                  a.category,
-                  (a.description || '').replace(/,/g, ';'),
-                  a.condition,
-                  a.riskRating || 'Low',
-                  a.age || '',
-                  (a.justification || '').replace(/,/g, ';'),
-                  (a.notes || '').replace(/,/g, ';'),
-                  qtyVal,
-                  a.cost,
-                  a.rul,
-                  a.verified ? "Yes" : "No"
-              ].map(v => `"${v}"`).join(",");
+              const row = [appState.siteInfo.name, room.id, room.floorLevel || '', room.roomCode || '', room.roomName, room.roomType || '', ...assetExportRow(a, isBuildingFabric(a.category))]
+                  .map(csvCell).join(",");
               csvContent += row + "\n";
           });
       });
@@ -1188,6 +1189,7 @@ function App() {
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 0);
   };
 
   const exportToJSON = () => {
@@ -1195,10 +1197,12 @@ function App() {
           site: appState.siteInfo,
           lastUpdated: new Date().toISOString(),
           rooms: appState.rooms.map(room => ({
+              id: room.id,
               roomName: room.roomName,
               assets: room.assets.map(a => ({
                   ...a,
-                  quantity: isBuildingFabric(a.category) ? 'N/A' : a.quantity
+                  quantity: isBuildingFabric(a.category) ? 'N/A' : a.quantity,
+                  reviewStatus: reviewStatus(a)
               }))
           }))
       };
@@ -1211,13 +1215,14 @@ function App() {
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 0);
   };
 
   const exportForRAG = () => {
       const data = appState.rooms.flatMap(room => 
           room.assets.map(asset => ({
               id: asset.id,
-              content: `${appState.siteInfo.name}, ${room.roomName}: ${asset.category} - ${asset.description}. Condition: ${asset.condition}. Risk: ${asset.riskRating || 'Low'}. Age: ${asset.age || 'Unknown'}. Justification: ${asset.justification}. Notes: ${asset.notes}. Quantity: ${isBuildingFabric(asset.category) ? 'N/A' : asset.quantity}`,
+              content: `${appState.siteInfo.name}, ${room.roomName}: ${asset.category} - ${asset.description}. Condition: ${asset.condition}. Risk: ${asset.riskRating || 'Not assessed'}. Age: ${asset.age || 'Unknown'}. Justification: ${asset.justification}. Notes: ${asset.notes}. Quantity: ${isBuildingFabric(asset.category) ? 'N/A' : asset.quantity}`,
               metadata: { building: appState.siteInfo.name, room: room.roomName, category: asset.category, cost: asset.cost, condition: asset.condition, risk: asset.riskRating, age: asset.age, auditLog: asset.auditTrail }
           }))
       );
@@ -1245,6 +1250,7 @@ function App() {
       a.href = url;
       a.download = `${appState.siteInfo.name}_RAG.json`;
       a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
   };
 
   const goToNextPage = async () => {
@@ -1286,6 +1292,23 @@ function App() {
       }
   };
   
+  // For shared or lost devices: inspections are stored unencrypted in this browser until cleared.
+  const handleSignOutAndClear = async () => {
+    const unsynced = await firebaseService.getPendingQueueCount().catch(() => 0);
+    const warning = unsynced > 0
+      ? `${unsynced} inspection(s) have NOT synced to the cloud and exist only on this device. Signing out will permanently delete them.\n\nSign out and delete anyway?`
+      : "Sign out and remove all inspection data and photos stored on this device? Data already synced to the cloud is not affected.";
+    if (!window.confirm(warning)) return;
+    setProcessing(true);
+    setLoadingText("Signing out and clearing this device...");
+    try {
+      await firebaseService.signOutAndClearDevice();
+    } catch (err) {
+      console.error("Sign-out cleanup failed:", err);
+    }
+    window.location.href = window.location.origin;
+  };
+
   const handleReset = async () => {
     if (window.confirm("Delete ALL local data and start a new assessment? (Cloud data is preserved in Firestore)")) {
         setProcessing(true);
@@ -1828,6 +1851,15 @@ function App() {
                   )}
 
                   <button
+                      onClick={handleSignOutAndClear}
+                      className="px-3 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 shadow-sm border bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
+                      title="Sign out and remove all inspection data stored on this device"
+                  >
+                      <span className="material-icons text-sm">logout</span>
+                      <span>Sign out</span>
+                  </button>
+
+                  <button
                       onClick={() => setIsMobileMode(!isMobileMode)}
                       className={`px-3 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 shadow-sm border ${
                           isMobileMode
@@ -1858,12 +1890,7 @@ function App() {
                       </div>
                   </div>
                   <button 
-                      onClick={() => {
-                          setIsEditingPresence(true);
-                          if (currentInspectionId) {
-                              firebaseService.updatePresence(currentInspectionId, inspectorProfile.userId, inspectorProfile.email, true);
-                          }
-                      }}
+                      onClick={requestControl}
                       className="bg-red-600 hover:bg-red-700 text-white font-bold px-4 py-2 rounded-lg text-xs shadow transition transform active:scale-95 flex items-center gap-1.5"
                   >
                       <span className="material-icons text-sm">lock_open</span> Claim Edit Lock
@@ -1943,6 +1970,17 @@ function App() {
                           >
                               <span className="material-icons text-sm">psychology</span>
                               AI Agent OS
+                          </button>
+                          <button
+                              onClick={() => setAppState(prev => ({ ...prev, view: 'rooms' }))}
+                              className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+                                  appState.view === 'rooms'
+                                      ? 'bg-indigo-600 text-white shadow'
+                                      : 'text-gray-600 hover:bg-slate-50'
+                              }`}
+                          >
+                              <span className="material-icons text-sm">grid_view</span>
+                              Room Board
                           </button>
                           <button
                               onClick={() => setAppState(prev => ({ ...prev, view: 'health-dashboard' }))}
@@ -2031,6 +2069,7 @@ function App() {
                               siteInfo={appState.siteInfo}
                               rooms={appState.rooms}
                               onUpdateSiteInfo={(key, value) => {
+                                  if (!hasEditLock) return;
                                   setAppState(prev => {
                                       const updatedSiteInfo = { ...prev.siteInfo, [key]: value };
                                       firebaseService.saveState(updatedSiteInfo, prev.rooms);
@@ -2049,6 +2088,7 @@ function App() {
                               siteInfo={appState.siteInfo}
                               rooms={appState.rooms}
                               onUpdateSiteInfo={(key, value) => {
+                                  if (!hasEditLock) return;
                                   setAppState(prev => {
                                       const updatedSiteInfo = { ...prev.siteInfo, [key]: value };
                                       firebaseService.saveState(updatedSiteInfo, prev.rooms);
@@ -2056,6 +2096,7 @@ function App() {
                                   });
                               }}
                               onUpdateRooms={(updatedRooms) => {
+                                  if (!hasEditLock) return;
                                   setAppState(prev => {
                                       firebaseService.saveState(prev.siteInfo, updatedRooms);
                                       return { ...prev, rooms: updatedRooms };
@@ -2081,6 +2122,15 @@ function App() {
                           exportForRAG={exportForRAG}
                           setAppState={setAppState}
                           handleReset={handleReset}
+                      />
+                  )}
+
+                  {appState.view === 'rooms' && (
+                      <RoomBoardView
+                          siteName={appState.siteInfo.name}
+                          rooms={appState.rooms}
+                          onOpenRoom={(roomIndex) => setAppState(prev => ({ ...prev, currentRoomIndex: roomIndex, view: 'assessment' }))}
+                          onPreviewImage={setPreviewImage}
                       />
                   )}
 
@@ -2207,7 +2257,10 @@ function App() {
               onExitMobileMode={() => setIsMobileMode(false)}
               currentView={appState.view}
               viewMode={viewMode}
-              onNavigate={(view) => setAppState(prev => ({ ...prev, view: view as any }))}
+              onNavigate={(view) => {
+                  setViewMode('single');
+                  setAppState(prev => ({ ...prev, view: view as any }));
+              }}
               onTogglePortfolio={loadPortfolio}
           >
               <div className="w-full p-2 sm:p-4 flex flex-col flex-1">
@@ -2234,3 +2287,4 @@ function App() {
 }
 
 export default App;
+

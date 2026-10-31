@@ -1,8 +1,9 @@
 
 import { initializeApp } from "firebase/app";
+import { initializeAppCheck, ReCaptchaEnterpriseProvider } from "firebase/app-check";
 import { getFirestore, doc, setDoc, getDoc, collection, writeBatch, getDocs, onSnapshot, deleteDoc } from "firebase/firestore";
 import { getStorage, ref, uploadString, getDownloadURL } from "firebase/storage";
-import { getAuth, signInAnonymously } from "firebase/auth";
+import { getAuth, signInAnonymously, onAuthStateChanged, onIdTokenChanged, signOut } from "firebase/auth";
 import { get, set, clear, del } from 'idb-keyval';
 import { Room, SiteInfo } from '../types';
 import appletConfig from "../firebase-applet-config.json";
@@ -24,6 +25,11 @@ let db: any;
 let storage: any;
 let auth: any;
 let isConfigured = false;
+
+// Resolves once Firebase Auth has a signed-in user (or sign-in has definitely failed).
+// The security rules require request.auth, so every cloud read/write awaits this first.
+let resolveAuthReady: () => void = () => {};
+const authReady: Promise<void> = new Promise(resolve => { resolveAuthReady = resolve; });
 
 // Strict Firestore Error standard from system skill instructions
 export enum OperationType {
@@ -76,6 +82,21 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
 
 try {
     const app = initializeApp(firebaseConfig);
+
+    // Firebase App Check: proves requests come from this app, so the public Firebase config can't
+    // be used from scripts to create accounts or hit Firestore/Storage. Enabled when a reCAPTCHA
+    // Enterprise site key is configured; enforce it per product in the Firebase console afterwards.
+    const appCheckSiteKey = (import.meta as any).env?.VITE_FIREBASE_APPCHECK_SITE_KEY;
+    if (appCheckSiteKey && typeof window !== 'undefined') {
+        if ((import.meta as any).env?.VITE_FIREBASE_APPCHECK_DEBUG === 'true') {
+            // Local development only: prints a debug token to register in the Firebase console
+            (self as any).FIREBASE_APPCHECK_DEBUG_TOKEN = true;
+        }
+        initializeAppCheck(app, {
+            provider: new ReCaptchaEnterpriseProvider(appCheckSiteKey),
+            isTokenAutoRefreshEnabled: true,
+        });
+    }
     const dbId = appletConfig.firestoreDatabaseId;
     db = dbId ? getFirestore(app, dbId) : getFirestore(app);
     storage = getStorage(app);
@@ -84,9 +105,25 @@ try {
     console.log("✅ Firebase Initialized: DB + Storage + Auth Ready with Database ID:", dbId || "default");
 
     // Optional/Best-effort anonymous authentication to ensure valid credentials inside Firestore/Storage environments
+    // The AI gateway (/api/*) checks this token for the assetInspector claim; keep it current.
+    onIdTokenChanged(auth, async (user: any) => {
+        if (typeof document === 'undefined') return;
+        const token = user ? await user.getIdToken().catch(() => '') : '';
+        const secure = window.location.protocol === 'https:' ? '; Secure' : '';
+        document.cookie = token
+            ? `aip_id_token=${encodeURIComponent(token)}; Path=/api; SameSite=Strict${secure}`
+            : `aip_id_token=; Path=/api; Max-Age=0; SameSite=Strict${secure}`;
+    });
+    // Refresh administrator-assigned claims (e.g. assetInspector) before any cloud call runs.
+    onAuthStateChanged(auth, (user: any) => {
+        if (user) user.getIdToken(true).catch(() => {}).finally(() => resolveAuthReady());
+    });
     signInAnonymously(auth)
         .then(() => console.log("🔐 Authenticated anonymously to Firebase"))
-        .catch(e => console.warn("⚠️ Anonymous login deferred/disabled on project console:", e.message));
+        .catch(e => {
+            console.warn("⚠️ Anonymous sign-in failed — cloud sync will be refused by security rules. Enable Anonymous sign-in in the Firebase console.", e.message);
+            resolveAuthReady(); // unblock callers; their requests will fail and fall back to local storage
+        });
 } catch (e) {
     console.error("Firebase Initialization Error:", e);
 }
@@ -278,6 +315,7 @@ export class FirebaseService {
   // Helper to upload a single base64 image to Firebase Storage
   private async uploadImage(base64: string, path: string): Promise<string> {
     if (!storage) return base64;
+    await authReady;
     try {
         const storageRef = ref(storage, path);
         await uploadString(storageRef, base64, 'data_url');
@@ -399,7 +437,8 @@ export class FirebaseService {
 
   // Main cloud sync logic
   async saveStateToCloudDirect(siteInfo: SiteInfo, rooms: Room[]): Promise<void> {
-    if (!isConfigured || !db) return;
+    if (!isConfigured || !db) throw new Error("Firebase is not initialized; inspection remains queued.");
+    await authReady;
     
     const inspectionId = siteInfo?.name ? siteInfo.name.trim().replace(/\s+/g, '_').toLowerCase() : 'draft_inspection';
     const inspectionDocRef = doc(db, "inspections", inspectionId);
@@ -416,10 +455,15 @@ export class FirebaseService {
                 const ext = docItem.mimeType === 'application/pdf' ? 'pdf' : 'jpg';
                 const cloudPath = `inspections/${inspectionId}/documents/${docItem.id}.${ext}`;
                 const uploadedUrl = await this.uploadImage(docItem.dataUrl, cloudPath);
-                // If upload failed, compress thumbnail for document
-                docItem.dataUrl = uploadedUrl.startsWith('data:') 
-                    ? await this.createFirestoreThumbnail(uploadedUrl, 400, 0.5) 
-                    : uploadedUrl;
+                // If upload failed, compress thumbnail for image documents; drop non-image
+                // payloads (e.g. PDFs) so the Firestore document stays under the 1MB limit
+                if (!uploadedUrl.startsWith('data:')) {
+                    docItem.dataUrl = uploadedUrl;
+                } else if (uploadedUrl.startsWith('data:image')) {
+                    docItem.dataUrl = await this.createFirestoreThumbnail(uploadedUrl, 400, 0.5);
+                } else {
+                    delete docItem.dataUrl;
+                }
             }
         }
     }
@@ -459,6 +503,7 @@ export class FirebaseService {
         }, { merge: true });
     } catch (e: any) {
         console.warn("Firestore document write deferred:", e.message || e);
+        throw e;
     }
 
     try {
@@ -494,6 +539,7 @@ export class FirebaseService {
         }
     } catch (batchErr: any) {
         console.warn("Firestore sub-assets batch write deferred:", batchErr.message || batchErr);
+        throw batchErr;
     }
     
     console.log(`✅ Cloud synchronization processed for: inspections/${inspectionId}`);
@@ -611,9 +657,19 @@ export class FirebaseService {
         rooms: offlineRooms || []
     };
 
+    // Unsynced local edits take precedence over an older cloud snapshot on reload.
+    const pendingQueue = await get('pending_sync_queue') || {};
+    const localId = result.siteInfo?.name?.trim().replace(/\s+/g, '_').toLowerCase();
+    if (localId && pendingQueue[localId]) return result;
+
     if (isConfigured && db && result.siteInfo?.name && navigator.onLine) {
         const inspectionId = result.siteInfo.name.trim().replace(/\s+/g, '_').toLowerCase();
         try {
+            // Local edits still waiting to sync are newer than the cloud copy; don't clobber them
+            const pendingQueue = await get('pending_sync_queue') || {};
+            if (pendingQueue[inspectionId]) return result;
+
+            await authReady;
             const docRef = doc(db, "inspections", inspectionId);
             const docSnap = await getDoc(docRef);
 
@@ -653,6 +709,7 @@ export class FirebaseService {
       }
 
       try {
+          await authReady;
           const colRef = collection(db, "inspections");
           const snapshot = await getDocs(colRef);
           const cloudList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
@@ -668,15 +725,17 @@ export class FirebaseService {
       } catch (e: any) {
           console.error("Error fetching inspections from Firestore:", e.message);
           if (e.code === 'permission-denied' || e.message?.toLowerCase().includes('permission') || e.message?.toLowerCase().includes('unauthorized')) {
-              handleFirestoreError(e, OperationType.GET, "inspections");
+              // handleFirestoreError logs diagnostic info then throws; fall back to offline data instead
+              try { handleFirestoreError(e, OperationType.GET, "inspections"); } catch { /* logged */ }
           }
           return offlineList;
       }
   }
 
   // Real-time Presence API for Multi-Inspector collaboration
-  async updatePresence(inspectionId: string, userId: string, email: string, isEditing: boolean): Promise<void> {
+  async updatePresence(inspectionId: string, userId: string, email: string, isEditing: boolean, editClaimedAt: number = 0): Promise<void> {
     if (!isConfigured || !db) return;
+    await authReady;
     const docRef = doc(db, "inspections", inspectionId, "presence", userId);
     try {
         await setDoc(docRef, {
@@ -684,6 +743,7 @@ export class FirebaseService {
             email,
             lastActive: new Date().toISOString(),
             isEditing,
+            editClaimedAt,
             device: navigator.userAgent
         }, { merge: true });
     } catch (e) {
@@ -697,22 +757,67 @@ export class FirebaseService {
         return () => {};
     }
     const colRef = collection(db, "inspections", inspectionId, "presence");
-    return onSnapshot(colRef, (snapshot) => {
-        const list = snapshot.docs.map(doc => doc.data());
-        callback(list);
-    }, (err) => {
-        console.warn("Presence listen error:", err);
-        callback([]);
+    let unsubscribe: (() => void) | null = null;
+    let cancelled = false;
+    authReady.then(() => {
+        if (cancelled) return;
+        unsubscribe = onSnapshot(colRef, (snapshot: any) => {
+            const list = snapshot.docs.map((d: any) => d.data());
+            callback(list);
+        }, (err: any) => {
+            console.warn("Presence listen error:", err);
+            callback([]);
+        });
     });
+    return () => {
+        cancelled = true;
+        if (unsubscribe) unsubscribe();
+    };
   }
 
   async removePresence(inspectionId: string, userId: string): Promise<void> {
     if (!isConfigured || !db) return;
+    await authReady;
     const docRef = doc(db, "inspections", inspectionId, "presence", userId);
     try {
         await deleteDoc(docRef);
     } catch (e) {
         console.warn("Failed to remove presence:", e);
+    }
+  }
+
+  /**
+   * Signs out and removes every inspection copy this browser holds: the IndexedDB drafts,
+   * catalogue and sync queue, browser storage, the /api sign-in cookie and Firebase's own
+   * local auth/cache databases. Cloud data is untouched. Callers must warn about unsynced
+   * items first (getPendingQueueCount) because those exist only on this device.
+   */
+  async signOutAndClearDevice(): Promise<void> {
+    try {
+      if (auth) await signOut(auth);
+    } catch (e) {
+      console.warn("Firebase sign-out failed; clearing local data anyway:", e);
+    }
+    await clear();
+    try { localStorage.clear(); } catch {}
+    try { sessionStorage.clear(); } catch {}
+    if (typeof document !== 'undefined') {
+      document.cookie = 'aip_id_token=; Path=/api; Max-Age=0; SameSite=Strict';
+    }
+    // Firebase keeps auth state and (if enabled) a Firestore cache in its own databases
+    if (typeof indexedDB !== 'undefined' && typeof indexedDB.databases === 'function') {
+      try {
+        const databases = await indexedDB.databases();
+        await Promise.all(databases
+          .map(d => d.name)
+          .filter((name): name is string => Boolean(name) && (name === 'keyval-store' || name.startsWith('firebase') || name.startsWith('firestore')))
+          .map(name => new Promise<void>(resolve => {
+            const request = indexedDB.deleteDatabase(name);
+            request.onsuccess = request.onerror = request.onblocked = () => resolve();
+          })));
+      } catch (e) {
+        console.warn("Could not enumerate local databases:", e);
+      }
     }
   }
 
@@ -724,3 +829,4 @@ export class FirebaseService {
 }
 
 export const firebaseService = new FirebaseService();
+

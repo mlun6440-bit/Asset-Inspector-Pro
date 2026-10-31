@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { SiteInfo } from '../types';
 import { GoogleMapComponent } from './GoogleMapComponent';
 import { getGoogleMapsNavigationUrl } from '../services/googleMapsService';
@@ -40,6 +40,8 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
 }) => {
   const docInputRef = useRef<HTMLInputElement>(null);
   const vendorInputRef = useRef<HTMLInputElement>(null);
+  const [numRoomsDraft, setNumRoomsDraft] = useState(String(siteInfo.numRooms));
+  useEffect(() => { setNumRoomsDraft(String(siteInfo.numRooms)); }, [siteInfo.numRooms]);
 
   const hasCoordinates = siteInfo.latitude !== undefined && siteInfo.longitude !== undefined;
   const currentCoords = {
@@ -169,15 +171,10 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
                 height="220px"
                 isDraggableMarker={true}
                 onLocationChange={(newLoc) => {
-                  setAppState((prev: any) => ({
-                    ...prev,
-                    siteInfo: {
-                      ...prev.siteInfo,
-                      latitude: newLoc.lat,
-                      longitude: newLoc.lng,
-                      ...(newLoc.address ? { address: newLoc.address } : {})
-                    }
-                  }));
+                  // Routed through handleSiteInfoChange so the edit lock is respected
+                  handleSiteInfoChange('latitude', newLoc.lat);
+                  handleSiteInfoChange('longitude', newLoc.lng);
+                  if (newLoc.address) handleSiteInfoChange('address', newLoc.address);
                 }}
               />
             </div>
@@ -192,8 +189,14 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
               min={1}
               max={100}
               className="w-full px-4 py-2.5 rounded-xl bg-gray-50 border border-gray-200 focus:ring-2 focus:ring-indigo-500 focus:bg-white transition text-black placeholder-gray-400 text-sm"
-              value={siteInfo.numRooms}
-              onChange={(e) => handleSiteInfoChange('numRooms', parseInt(e.target.value) || 1)}
+              value={numRoomsDraft}
+              onChange={(e) => {
+                // Let the field be cleared while typing; commit a clamped 1-100 value
+                setNumRoomsDraft(e.target.value);
+                const parsed = parseInt(e.target.value, 10);
+                if (Number.isFinite(parsed)) handleSiteInfoChange('numRooms', Math.min(100, Math.max(1, parsed)));
+              }}
+              onBlur={() => setNumRoomsDraft(String(siteInfo.numRooms))}
             />
           </div>
 
@@ -231,13 +234,7 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
                     <button 
                       type="button"
                       onClick={() => {
-                        setAppState((prev: any) => ({
-                          ...prev,
-                          siteInfo: {
-                            ...prev.siteInfo,
-                            documents: prev.siteInfo.documents?.filter((d: any) => d.id !== doc.id)
-                          }
-                        }));
+                        handleSiteInfoChange('documents', siteInfo.documents?.filter(d => d.id !== doc.id));
                       }}
                       className="text-red-500 hover:text-red-700 transition"
                     >

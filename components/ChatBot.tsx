@@ -141,6 +141,35 @@ export const ChatBot: React.FC<ChatBotProps> = ({ contextData, privacyMode, mode
   const nextStartTimeRef = useRef<number>(0);
   const audioSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const frameIntervalRef = useRef<number | null>(null);
+  const liveStreamRef = useRef<MediaStream | null>(null);
+  const liveSessionPromiseRef = useRef<Promise<any> | null>(null);
+  const liveCancelledRef = useRef(false);
+
+  // Releases every Live resource on every exit path (stop, error, close, connect failure, unmount).
+  // Safe to call repeatedly.
+  const teardownLive = () => {
+    if (frameIntervalRef.current) {
+      clearInterval(frameIntervalRef.current);
+      frameIntervalRef.current = null;
+    }
+    try { liveSessionRef.current?.scriptProcessor?.disconnect(); } catch (e) {}
+    liveSessionRef.current = null;
+    liveStreamRef.current?.getTracks().forEach(track => track.stop());
+    liveStreamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+    const sessionPromise = liveSessionPromiseRef.current;
+    liveSessionPromiseRef.current = null;
+    sessionPromise?.then(session => { try { session.close(); } catch (e) {} }).catch(() => {});
+    for (const s of audioSourcesRef.current.values()) {
+      try { s.stop(); } catch (e) {}
+    }
+    audioSourcesRef.current.clear();
+    for (const ref of [audioContextInRef, audioContextOutRef]) {
+      const ctx = ref.current;
+      ref.current = null;
+      if (ctx && ctx.state !== 'closed') ctx.close().catch(() => {});
+    }
+  };
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -152,28 +181,9 @@ export const ChatBot: React.FC<ChatBotProps> = ({ contextData, privacyMode, mode
 
   useEffect(() => {
     return () => {
-      // Ensure camera, audio streams, intervals, and audio contexts are cleanly torn down on unmount
-      if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
-      if (liveSessionRef.current) {
-        try {
-          const { stream, scriptProcessor } = liveSessionRef.current;
-          stream?.getTracks()?.forEach((track: any) => track.stop());
-          scriptProcessor?.disconnect();
-        } catch (e) {
-          console.warn("Error cleaning up live stream", e);
-        }
-        liveSessionRef.current = null;
-      }
-      for (const s of audioSourcesRef.current.values()) {
-        try { s.stop(); } catch (e) {}
-      }
-      audioSourcesRef.current.clear();
-      if (audioContextInRef.current && audioContextInRef.current.state !== 'closed') {
-        try { audioContextInRef.current.close(); } catch(e) {}
-      }
-      if (audioContextOutRef.current && audioContextOutRef.current.state !== 'closed') {
-        try { audioContextOutRef.current.close(); } catch(e) {}
-      }
+      // Ensure camera, audio streams, intervals, the session and audio contexts are torn down on unmount
+      liveCancelledRef.current = true;
+      teardownLive();
     };
   }, []);
 
@@ -236,19 +246,20 @@ export const ChatBot: React.FC<ChatBotProps> = ({ contextData, privacyMode, mode
 
   const startLiveMode = async () => {
     if (isLiveActive) return;
+    liveCancelledRef.current = false;
     setIsLiveActive(true);
     setLiveTranscription("Initializing Multimodal Session...");
 
     try {
-      const ai = new GoogleGenAI({ 
-        apiKey: process.env.GEMINI_API_KEY || process.env.API_KEY || '',
-        httpOptions: {
-          headers: {
-            'User-Agent': 'aistudio-build',
-          }
-        }
-      });
-      
+      // The Gemini key stays on the server; it mints a short-lived, single-use token for this session.
+      const tokenResponse = await fetch('/api/live-token', { method: 'POST', credentials: 'same-origin' });
+      const tokenBody = await tokenResponse.json().catch(() => ({}));
+      if (!tokenResponse.ok || !tokenBody.token) {
+        throw new Error(tokenBody?.error?.message || 'Live AI is unavailable on this server.');
+      }
+      if (liveCancelledRef.current) return;
+      const ai = new GoogleGenAI({ apiKey: tokenBody.token, httpOptions: { apiVersion: 'v1alpha' } });
+
       audioContextInRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
       audioContextOutRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
       const outputNode = audioContextOutRef.current.createGain();
@@ -258,6 +269,12 @@ export const ChatBot: React.FC<ChatBotProps> = ({ contextData, privacyMode, mode
         audio: true, 
         video: { width: 640, height: 480, frameRate: 15 } 
       });
+      // Track the stream immediately so stopping before the session opens still releases camera/mic
+      liveStreamRef.current = stream;
+      if (liveCancelledRef.current) {
+        teardownLive();
+        return;
+      }
 
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
@@ -284,9 +301,11 @@ export const ChatBot: React.FC<ChatBotProps> = ({ contextData, privacyMode, mode
       `;
 
       const sessionPromise = ai.live.connect({
-        model: 'gemini-3.1-flash-live-preview',
+        model: tokenBody.model || 'gemini-3.1-flash-live-preview',
         callbacks: {
           onopen: () => {
+            // The user may have stopped (or the component unmounted) while connecting
+            if (liveCancelledRef.current || !audioContextInRef.current) return;
             setLiveTranscription("Vision/Audio Active. Point camera at assets.");
             
             const audioSource = audioContextInRef.current!.createMediaStreamSource(stream);
@@ -432,24 +451,29 @@ export const ChatBot: React.FC<ChatBotProps> = ({ contextData, privacyMode, mode
         },
       });
 
+      liveSessionPromiseRef.current = sessionPromise;
+      sessionPromise.catch((err) => {
+        console.error("Live session failed to connect:", err);
+        const wasCancelled = liveCancelledRef.current;
+        teardownLive();
+        setIsLiveActive(false);
+        setLiveTranscription("");
+        if (!wasCancelled) alert(`Live AI could not start: ${err instanceof Error ? err.message : String(err)}`);
+      });
+      if (liveCancelledRef.current) teardownLive();
+
     } catch (e) {
       console.error("Failed to start live mode:", e);
+      teardownLive();
       setIsLiveActive(false);
+      setLiveTranscription("");
+      alert(`Live AI could not start: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
 
   const stopLiveMode = () => {
-    if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
-    if (liveSessionRef.current) {
-      const { stream, scriptProcessor } = liveSessionRef.current;
-      stream.getTracks().forEach((track: any) => track.stop());
-      scriptProcessor.disconnect();
-      liveSessionRef.current = null;
-    }
-    for (const s of audioSourcesRef.current.values()) try { s.stop(); } catch(e) {}
-    audioSourcesRef.current.clear();
-    if (audioContextInRef.current) audioContextInRef.current.close();
-    if (audioContextOutRef.current) audioContextOutRef.current.close();
+    liveCancelledRef.current = true;
+    teardownLive();
     setIsLiveActive(false);
     setLiveTranscription("");
   };
