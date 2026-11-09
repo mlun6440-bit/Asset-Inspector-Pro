@@ -85,7 +85,11 @@ try {
 
     // Optional/Best-effort anonymous authentication to ensure valid credentials inside Firestore/Storage environments
     signInAnonymously(auth)
-        .then(() => console.log("🔐 Authenticated anonymously to Firebase"))
+        .then(async credential => {
+            // Refresh administrator-assigned claims when an approved inspector reloads.
+            await credential.user.getIdToken(true);
+            console.log("🔐 Authenticated anonymously to Firebase");
+        })
         .catch(e => console.warn("⚠️ Anonymous login deferred/disabled on project console:", e.message));
 } catch (e) {
     console.error("Firebase Initialization Error:", e);
@@ -399,7 +403,7 @@ export class FirebaseService {
 
   // Main cloud sync logic
   async saveStateToCloudDirect(siteInfo: SiteInfo, rooms: Room[]): Promise<void> {
-    if (!isConfigured || !db) return;
+    if (!isConfigured || !db) throw new Error("Firebase is not initialized; inspection remains queued.");
     
     const inspectionId = siteInfo?.name ? siteInfo.name.trim().replace(/\s+/g, '_').toLowerCase() : 'draft_inspection';
     const inspectionDocRef = doc(db, "inspections", inspectionId);
@@ -459,6 +463,7 @@ export class FirebaseService {
         }, { merge: true });
     } catch (e: any) {
         console.warn("Firestore document write deferred:", e.message || e);
+        throw e;
     }
 
     try {
@@ -494,6 +499,7 @@ export class FirebaseService {
         }
     } catch (batchErr: any) {
         console.warn("Firestore sub-assets batch write deferred:", batchErr.message || batchErr);
+        throw batchErr;
     }
     
     console.log(`✅ Cloud synchronization processed for: inspections/${inspectionId}`);
@@ -611,6 +617,11 @@ export class FirebaseService {
         rooms: offlineRooms || []
     };
 
+    // Unsynced local edits take precedence over an older cloud snapshot on reload.
+    const pendingQueue = await get('pending_sync_queue') || {};
+    const localId = result.siteInfo?.name?.trim().replace(/\s+/g, '_').toLowerCase();
+    if (localId && pendingQueue[localId]) return result;
+
     if (isConfigured && db && result.siteInfo?.name && navigator.onLine) {
         const inspectionId = result.siteInfo.name.trim().replace(/\s+/g, '_').toLowerCase();
         try {
@@ -724,3 +735,4 @@ export class FirebaseService {
 }
 
 export const firebaseService = new FirebaseService();
+

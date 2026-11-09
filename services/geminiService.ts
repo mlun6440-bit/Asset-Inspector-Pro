@@ -1,18 +1,18 @@
 
 import { GoogleGenAI, Type, Schema } from "@google/genai";
 import { Asset, Room, SiteInfo, ChatMessage, WorkOrder } from '../types';
-import { safeParseJson, sanitizeDetectedAssets } from './schemas';
+import { safeParseJson, sanitizeDetectedAssets, RawDetectedAssetArraySchema } from './schemas';
 
 // process.env.API_KEY is injected by the environment.
 const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY || '';
-const ai = new GoogleGenAI({ 
+const ai = apiKey ? new GoogleGenAI({
   apiKey,
   httpOptions: {
     headers: {
       'User-Agent': 'aistudio-build',
     }
   }
-});
+}) : null;
 
 // High-performance image element cache to avoid re-decoding massive multi-MB base64 images per bounding box
 const imageElementCache = new Map<string, Promise<HTMLImageElement>>();
@@ -116,68 +116,9 @@ export const cropImage = async (base64Image: string, bbox: { x: number, y: numbe
   }
 };
 
-export const getFallbackDetectedAssets = (allowedCategories: string[]): Asset[] => {
-  const defaults = [
-    {
-      id: crypto.randomUUID(),
-      category: allowedCategories.find(c => c.toLowerCase().includes('electrical')) || "Electrical Services (Distribution Boards, Wiring, Lighting)",
-      name: "Main Distribution Board (MSB-01)",
-      description: "Surface mounted industrial steel distribution panel with labeled circuit breakers and isolators.",
-      condition: "Good",
-      riskRating: "Low",
-      justification: "Panel enclosure is clean and properly latched with no visible scorch or overheating marks.",
-      quantity: "1",
-      cost: "3200",
-      age: "4",
-      rul: "16",
-      notes: "Annual thermographic scan up to date.",
-      sourceImageIndex: 0,
-      boundingBox: { x: 0.15, y: 0.15, width: 0.35, height: 0.55 },
-      aiDetected: true,
-      verified: false
-    },
-    {
-      id: crypto.randomUUID(),
-      category: allowedCategories.find(c => c.toLowerCase().includes('hvac')) || "Mechanical & HVAC (Air Conditioning, Ventilation, Fans)",
-      name: "Rooftop HVAC Air Handling Unit (AHU-02)",
-      description: "Ducted packaged rooftop air conditioning unit with primary refrigerant line trunking.",
-      condition: "Average",
-      riskRating: "Medium",
-      justification: "Operational wear with minor surface oxidation on condenser housing; filter renewal due.",
-      quantity: "1",
-      cost: "5500",
-      age: "7",
-      rul: "5",
-      notes: "Clean evaporator coil and inspect belt tension next service cycle.",
-      sourceImageIndex: 0,
-      boundingBox: { x: 0.52, y: 0.18, width: 0.42, height: 0.48 },
-      aiDetected: true,
-      verified: false
-    },
-    {
-      id: crypto.randomUUID(),
-      category: allowedCategories.find(c => c.toLowerCase().includes('fabric')) || "Building Structural & Fabric (Floors, Walls, Ceilings, Doors, Windows)",
-      name: "Reinforced Concrete Floor & Wall Substructure",
-      description: "Epoxy sealed reinforced concrete structural flooring and rendered blockwork partition walls.",
-      condition: "Good",
-      riskRating: "Low",
-      justification: "Uniform concrete slab integrity with no active structural expansion cracks or dampness.",
-      quantity: "1",
-      cost: "2000",
-      age: "8",
-      rul: "22",
-      notes: "No remedial structural action required.",
-      sourceImageIndex: 0,
-      boundingBox: { x: 0.05, y: 0.05, width: 0.90, height: 0.90 },
-      aiDetected: true,
-      verified: false
-    }
-  ];
-  return sanitizeDetectedAssets(defaults);
-};
-
 export const detectAssetsWithBoundingBoxes = async (images: { dataUrl: string }[], allowedCategories: string[], privacyMode: boolean = false, existingAssets: Asset[] = []): Promise<Asset[]> => {
   if (!images || images.length === 0) return [];
+  if (!apiKey) throw new Error("Asset detection is unavailable: configure the Gemini API key and retry.");
 
   const categoriesContext = allowedCategories.map(cat => `- ${cat}`).join('\n');
   const existingAssetsContext = existingAssets.length > 0 ? 
@@ -315,10 +256,9 @@ export const detectAssetsWithBoundingBoxes = async (images: { dataUrl: string }[
     }
   }
 
-  // If no API key or image payload extraction failed, fallback safely
-  if (!apiKey || parts.length === 1) {
-    console.warn("AI detection operating in fallback baseline mode (API key unconfigured or images unreadable).");
-    return getFallbackDetectedAssets(allowedCategories);
+  // Never report a partial/unreadable photo set as a complete inspection.
+  if (parts.length !== images.length + 1) {
+    throw new Error("Some inspection photos could not be read. Replace the affected photos and retry.");
   }
 
   try {
@@ -331,15 +271,16 @@ export const detectAssetsWithBoundingBoxes = async (images: { dataUrl: string }[
       }
     });
 
-    const rawAssets = safeParseJson<any[]>(response.text, []);
-    const sanitized = sanitizeDetectedAssets(rawAssets);
-    if (sanitized.length > 0) {
-      return sanitized;
+    const rawAssets = safeParseJson<unknown>(response.text, null);
+    const parsed = RawDetectedAssetArraySchema.safeParse(rawAssets);
+    if (!parsed.success) {
+      throw new Error("The AI returned an invalid asset response. Please retry; existing assets are unchanged.");
     }
-    return getFallbackDetectedAssets(allowedCategories);
+    // A valid empty array means no assets were detected, not a reason to fabricate records.
+    return sanitizeDetectedAssets(parsed.data);
   } catch (error) {
-    console.error("Asset detection API call encountered an issue, generating resilient baseline assets:", error);
-    return getFallbackDetectedAssets(allowedCategories);
+    console.error("Asset detection failed:", error);
+    throw new Error("Asset detection failed. Existing assets are unchanged. Check the API configuration or connection and retry.", { cause: error });
   }
 };
 
@@ -1755,4 +1696,5 @@ Instructions:
     traversedEdges: []
   };
 };
+
 
