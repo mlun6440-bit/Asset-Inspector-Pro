@@ -300,7 +300,7 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
           const newDwg: AsBuiltDrawing = {
             id: crypto.randomUUID(),
             name: file.name,
-            drawingNo: dwgNo || 'DWG-' + Math.floor(1000 + Math.random() * 9000),
+            drawingNo: dwgNo || 'UNNUMBERED-' + crypto.randomUUID().slice(0, 6).toUpperCase(),
             revision: dwgRev || '0',
             discipline: dwgDiscipline,
             areaFloor: dwgArea || 'All Areas',
@@ -313,7 +313,9 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
           const updatedDrawings = [newDwg, ...(osState.asBuiltDrawings || [])];
           
           // Also seed a memory inside the Second Brain that this drawing was parsed!
-          const drawingMemoryText = `As-built blueprint "${newDwg.drawingNo}" (Discipline: ${newDwg.discipline}, Rev: ${newDwg.revision}) successfully loaded. Identified key components: ${analysis.detectedEquipment.join(', ')}.`;
+          const drawingMemoryText = analysis.detectedEquipment.length > 0
+            ? `As-built blueprint "${newDwg.drawingNo}" (Discipline: ${newDwg.discipline}, Rev: ${newDwg.revision}) loaded. Identified key components: ${analysis.detectedEquipment.join(', ')}.`
+            : `As-built blueprint "${newDwg.drawingNo}" (Discipline: ${newDwg.discipline}, Rev: ${newDwg.revision}) stored. No equipment was identified automatically.`;
           const updatedMemories: AgentMemoryItem[] = [{
             id: crypto.randomUUID(),
             category: 'site_fact',
@@ -448,6 +450,7 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
       setDegradationResult(result);
     } catch (e) {
       console.error(e);
+      alert(e instanceof Error ? e.message : 'Degradation analysis failed.');
     } finally {
       setIsAnalyzingDegradation(false);
     }
@@ -472,7 +475,7 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
 
     const newWO: WorkOrder = {
       id: crypto.randomUUID(),
-      ticketNo: woTicketNo || 'WO-' + new Date().getFullYear() + '-' + Math.floor(1000 + Math.random() * 9000),
+      ticketNo: woTicketNo || 'UNNUMBERED-' + crypto.randomUUID().slice(0, 6).toUpperCase(),
       assetId: woAssetId || undefined,
       assetName: selectedAssetName,
       roomName: finalRoomName,
@@ -648,6 +651,7 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
       setWoAnalysisResult(result);
     } catch (e) {
       console.error(e);
+      alert(e instanceof Error ? e.message : 'Work order audit failed.');
     } finally {
       setIsAnalyzingWO(false);
     }
@@ -1128,65 +1132,9 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
           });
         } catch (err) {
           console.error("CFO Analysis failed:", err);
-          await logLine("Error in AI CFO pipeline. Initiating fallback computation engine...", 200);
-          
-          let totalCost = 0;
-          let immediateCAPEX = 0;
-          let shortTermCAPEX = 0;
-          let mediumTermCAPEX = 0;
-
-          allAssets.forEach(item => {
-            const cost = parseFloat(item.asset.cost) || 0;
-            const rul = parseFloat(item.asset.rul) || 5;
-            totalCost += cost;
-
-            if (rul <= 2) {
-              immediateCAPEX += cost;
-            } else if (rul <= 5) {
-              shortTermCAPEX += cost;
-            } else {
-              mediumTermCAPEX += cost;
-            }
-          });
-
-          if (totalCost === 0) {
-            totalCost = 250000;
-            immediateCAPEX = 45000;
-            shortTermCAPEX = 85000;
-            mediumTermCAPEX = 120000;
-          }
-
+          await logLine("Error in AI CFO pipeline. No figures were produced — retry once the AI service is available.", 200);
           setIsExecuting(false);
-          setExecutionResult({
-            type: 'finance',
-            executiveSummary: "Fallback AI CFO Summary: Real-time API connection was interrupted. Based on linear calculations, your portfolio has a total asset value of $" + totalCost.toLocaleString() + ". Recommend prioritizing immediate capital reserve allocation to mitigate upcoming asset life expiry.",
-            totalAssetValue: totalCost,
-            immediateCAPEX: immediateCAPEX,
-            shortTermCAPEX: shortTermCAPEX,
-            mediumTermCAPEX: mediumTermCAPEX,
-            monthlyAllocation: Math.round((immediateCAPEX + shortTermCAPEX * 0.5) / 36),
-            riskConcentrationPercentage: 15,
-            scenarios: [
-              { year: '2026', baseAmount: Math.round(immediateCAPEX * 0.4), stressAmount: Math.round(immediateCAPEX * 0.5), inflationAmount: Math.round(immediateCAPEX * 0.42) },
-              { year: '2027', baseAmount: Math.round(immediateCAPEX * 0.6), stressAmount: Math.round(immediateCAPEX * 0.8), inflationAmount: Math.round(immediateCAPEX * 0.65) },
-              { year: '2028', baseAmount: Math.round(shortTermCAPEX * 0.3), stressAmount: Math.round(shortTermCAPEX * 0.4), inflationAmount: Math.round(shortTermCAPEX * 0.34) },
-              { year: '2029', baseAmount: Math.round(shortTermCAPEX * 0.3), stressAmount: Math.round(shortTermCAPEX * 0.4), inflationAmount: Math.round(shortTermCAPEX * 0.35) },
-              { year: '2030', baseAmount: Math.round(shortTermCAPEX * 0.4), stressAmount: Math.round(shortTermCAPEX * 0.5), inflationAmount: Math.round(shortTermCAPEX * 0.49) },
-              { year: '2031', baseAmount: mediumTermCAPEX, stressAmount: Math.round(mediumTermCAPEX * 1.2), inflationAmount: Math.round(mediumTermCAPEX * 1.26) }
-            ],
-            criticalAssets: allAssets.slice(0, 3).map(item => ({
-              assetId: item.asset.id,
-              assetName: item.asset.name,
-              roomName: item.roomName,
-              cost: parseFloat(item.asset.cost) || 3000,
-              condition: item.asset.condition,
-              riskRating: item.asset.riskRating || 'Medium',
-              score: (parseFloat(item.asset.cost) || 3000) * (item.asset.riskRating === 'Extreme' ? 10 : item.asset.riskRating === 'High' ? 6 : 3) / 1000
-            })),
-            alerts: [
-              { id: 'err-alert-1', type: 'warning', title: 'Calculated Capex Reserve Required', message: "Immediate capex requirements total $" + immediateCAPEX.toLocaleString() + " over 24 months." }
-            ]
-          });
+          alert(err instanceof Error ? err.message : 'CFO analysis failed.');
         }
 
       } else if (skillId === 'risk') {

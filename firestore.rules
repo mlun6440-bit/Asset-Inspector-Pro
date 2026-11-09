@@ -6,42 +6,33 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
-    // Helper functions
-    function isAuthenticated() {
+    // Every request must come from a signed-in Firebase user. The app signs in
+    // anonymously on load; for production, replace anonymous sign-in with a real
+    // provider (e.g. Microsoft/Google restricted to your company domain) and
+    // tighten isSignedIn() to check request.auth.token.email.
+    function isSignedIn() {
       return request.auth != null;
     }
 
-    // Inspections collection rules
     match /inspections/{inspectionId} {
-      // Allow read for inspection catalog/views
-      allow read: if true;
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn()
+        && request.resource.data.keys().hasAll(['siteInfo', 'rooms', 'lastUpdated']);
+      allow delete: if isSignedIn();
 
-      // Allow create and update if authenticated or if payload has required inspection fields
-      allow create, update: if isAuthenticated() || (
-        request.resource.data.keys().hasAll(['siteInfo', 'rooms', 'lastUpdated'])
-      );
-
-      // Only authenticated users can delete inspections
-      allow delete: if isAuthenticated();
-
-      // Assets subcollection matching
       match /assets/{assetId} {
-        allow read: if true;
-        allow create, update: if isAuthenticated() || (
-          request.resource.data.keys().hasAll(['id', 'category', 'condition'])
-        );
-        allow delete: if isAuthenticated();
+        allow read: if isSignedIn();
+        allow create, update: if isSignedIn()
+          && request.resource.data.keys().hasAll(['id', 'category', 'condition']);
+        allow delete: if isSignedIn();
       }
 
-      // Presence subcollection matching for collaboration
+      // Presence documents for live collaboration
       match /presence/{userId} {
-        allow read: if true;
-        allow create, update: if isAuthenticated() || (
-          request.resource.data.keys().hasAll(['userId', 'email', 'lastActive'])
-        );
-        allow delete: if isAuthenticated() || (
-          request.auth != null && request.auth.uid == userId
-        );
+        allow read: if isSignedIn();
+        allow create, update: if isSignedIn()
+          && request.resource.data.keys().hasAll(['userId', 'email', 'lastActive']);
+        allow delete: if isSignedIn();
       }
     }
   }
