@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { firebaseService } from '../services/firebaseService';
 
 export interface InspectorProfile {
@@ -25,11 +25,14 @@ export function usePresenceSession({
   const [activePresences, setActivePresences] = useState<any[]>([]);
   const [hasEditLock, setHasEditLock] = useState<boolean>(true);
   const [isEditingPresence, setIsEditingPresence] = useState<boolean>(true);
+  const isEditingRef = useRef<boolean>(isEditingPresence);
+  isEditingRef.current = isEditingPresence;
 
   const getAvatarColor = useCallback((str: string) => {
+    const safeStr = str || 'inspector';
     let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      hash = str.charCodeAt(i) + ((hash << 5) - hash);
+    for (let i = 0; i < safeStr.length; i++) {
+      hash = safeStr.charCodeAt(i) + ((hash << 5) - hash);
     }
     const colors = [
       'bg-pink-500 text-white',
@@ -46,11 +49,12 @@ export function usePresenceSession({
   }, []);
 
   const getInitials = useCallback((name: string, email: string) => {
-    const text = name || email || 'Inspector';
+    const text = (name || email || 'Inspector').trim();
+    if (!text) return 'IN';
     if (text.includes('@')) {
       return text.substring(0, 2).toUpperCase();
     }
-    const parts = text.split(' ');
+    const parts = text.split(/\s+/).filter(Boolean);
     if (parts.length >= 2) {
       return (parts[0][0] + parts[1][0]).toUpperCase();
     }
@@ -65,11 +69,21 @@ export function usePresenceSession({
     }
 
     // 1. Immediately publish initial presence
-    firebaseService.updatePresence(currentInspectionId, inspectorProfile.userId, inspectorProfile.email, isEditingPresence);
+    void firebaseService.updatePresence(
+      currentInspectionId,
+      inspectorProfile.userId,
+      inspectorProfile.email,
+      isEditingRef.current
+    );
 
     // 2. Set up heartbeat timer (every 5 seconds)
     const heartbeat = setInterval(() => {
-      firebaseService.updatePresence(currentInspectionId, inspectorProfile.userId, inspectorProfile.email, isEditingPresence);
+      void firebaseService.updatePresence(
+        currentInspectionId,
+        inspectorProfile.userId,
+        inspectorProfile.email,
+        isEditingRef.current
+      );
     }, 5000);
 
     // 3. Listen to all presences on this site
@@ -77,21 +91,19 @@ export function usePresenceSession({
       const now = Date.now();
       // Filter out stale presences (> 15 seconds) and our own presence
       const activeOthers = presences.filter((p) => {
-        if (p.userId === inspectorProfile.userId) return false;
+        if (!p || p.userId === inspectorProfile.userId) return false;
         const lastActiveTime = p.lastActive ? new Date(p.lastActive).getTime() : 0;
-        return now - lastActiveTime < 15000;
+        return Number.isFinite(lastActiveTime) && now - lastActiveTime < 15000;
       });
       setActivePresences(activeOthers);
 
-      // 4. Resolve edit lock conflicts
+      // 4. Resolve edit lock conflicts without resubscribing listener
       const otherEditors = activeOthers.filter((p) => p.isEditing);
       if (otherEditors.length > 0) {
-        if (isEditingPresence) {
+        if (isEditingRef.current) {
           setIsEditingPresence(false);
-          setHasEditLock(false);
-        } else {
-          setHasEditLock(false);
         }
+        setHasEditLock(false);
       } else {
         setHasEditLock(true);
       }
@@ -101,13 +113,13 @@ export function usePresenceSession({
       clearInterval(heartbeat);
       if (unsubscribe) unsubscribe();
     };
-  }, [currentInspectionId, effectiveIsOnline, viewMode, appView, inspectorProfile.userId, inspectorProfile.email, isEditingPresence]);
+  }, [currentInspectionId, effectiveIsOnline, viewMode, appView, inspectorProfile.userId, inspectorProfile.email]);
 
   const requestControl = useCallback(() => {
     setIsEditingPresence(true);
     setHasEditLock(true);
     if (currentInspectionId) {
-      firebaseService.updatePresence(currentInspectionId, inspectorProfile.userId, inspectorProfile.email, true);
+      void firebaseService.updatePresence(currentInspectionId, inspectorProfile.userId, inspectorProfile.email, true);
     }
   }, [currentInspectionId, inspectorProfile.userId, inspectorProfile.email]);
 

@@ -273,6 +273,32 @@ const SEEDED_INSPECTIONS: any[] = [
   }
 ];
 
+export function sanitizeInspectionId(name?: string | null): string {
+  if (!name || !name.trim()) return 'draft_inspection';
+  const cleaned = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return cleaned || 'draft_inspection';
+}
+
+function normalizeRooms(rawRooms: any): Room[] {
+  if (!Array.isArray(rawRooms)) return [];
+  return rawRooms
+    .filter((r) => r && typeof r === 'object')
+    .map((r, idx) => ({
+      ...r,
+      id: r.id || `room_${idx + 1}`,
+      buildingName: r.buildingName || '',
+      roomName: r.roomName || `Room ${idx + 1}`,
+      images: Array.isArray(r.images) ? r.images : [],
+      assets: Array.isArray(r.assets) ? r.assets : [],
+      croppedImages: r.croppedImages && typeof r.croppedImages === 'object' ? r.croppedImages : {},
+      comments: typeof r.comments === 'string' ? r.comments : '',
+    }));
+}
+
 export class FirebaseService {
   
   // Helper to upload a single base64 image to Firebase Storage
@@ -329,7 +355,7 @@ export class FirebaseService {
 
   // Robust saveState that registers offline pending queue if offline
   async saveState(siteInfo: SiteInfo, rooms: Room[]): Promise<void> {
-    const inspectionId = siteInfo?.name ? siteInfo.name.trim().replace(/\s+/g, '_').toLowerCase() : 'draft_inspection';
+    const inspectionId = sanitizeInspectionId(siteInfo?.name);
     
     // 1. Save locally for current working draft
     try {
@@ -401,7 +427,7 @@ export class FirebaseService {
   async saveStateToCloudDirect(siteInfo: SiteInfo, rooms: Room[]): Promise<void> {
     if (!isConfigured || !db) return;
     
-    const inspectionId = siteInfo?.name ? siteInfo.name.trim().replace(/\s+/g, '_').toLowerCase() : 'draft_inspection';
+    const inspectionId = sanitizeInspectionId(siteInfo?.name);
     const inspectionDocRef = doc(db, "inspections", inspectionId);
     
     console.log(`Cloud Sync Initiated: ${siteInfo.name}`);
@@ -606,13 +632,13 @@ export class FirebaseService {
     const offlineSiteInfo = await get('siteInfo');
     const offlineRooms = await get('rooms');
     
-    let result = {
+    const result = {
         siteInfo: offlineSiteInfo || null,
-        rooms: offlineRooms || []
+        rooms: normalizeRooms(offlineRooms)
     };
 
     if (isConfigured && db && result.siteInfo?.name && navigator.onLine) {
-        const inspectionId = result.siteInfo.name.trim().replace(/\s+/g, '_').toLowerCase();
+        const inspectionId = sanitizeInspectionId(result.siteInfo.name);
         try {
             const docRef = doc(db, "inspections", inspectionId);
             const docSnap = await getDoc(docRef);
@@ -621,8 +647,8 @@ export class FirebaseService {
                 const data = docSnap.data();
                 console.log("✅ Loaded latest data from Firestore");
                 return {
-                    siteInfo: data.siteInfo as SiteInfo,
-                    rooms: data.rooms as Room[]
+                    siteInfo: (data.siteInfo as SiteInfo) || result.siteInfo,
+                    rooms: normalizeRooms(data.rooms)
                 };
             }
         } catch (e: any) {
@@ -655,7 +681,10 @@ export class FirebaseService {
       try {
           const colRef = collection(db, "inspections");
           const snapshot = await getDocs(colRef);
-          const cloudList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+          const cloudList = snapshot.docs.map(docSnap => {
+              const data = docSnap.data();
+              return { id: docSnap.id, ...data, rooms: normalizeRooms(data.rooms) };
+          });
 
           // Merge cloud inspections into local inspections list (keep offline available)
           const localMap = { ...localInspections };
@@ -664,13 +693,16 @@ export class FirebaseService {
           });
           await set('all_local_inspections', localMap);
 
-          return Object.values(localMap);
+          return Object.values(localMap).map((ins: any) => ({
+              ...ins,
+              rooms: normalizeRooms(ins?.rooms)
+          }));
       } catch (e: any) {
-          console.error("Error fetching inspections from Firestore:", e.message);
-          if (e.code === 'permission-denied' || e.message?.toLowerCase().includes('permission') || e.message?.toLowerCase().includes('unauthorized')) {
-              handleFirestoreError(e, OperationType.GET, "inspections");
-          }
-          return offlineList;
+          console.warn("Firestore portfolio fetch deferred (using offline cache):", e?.message || e);
+          return offlineList.map((ins: any) => ({
+              ...ins,
+              rooms: normalizeRooms(ins?.rooms)
+          }));
       }
   }
 
@@ -718,8 +750,13 @@ export class FirebaseService {
 
   async deleteDatabase(): Promise<void> {
     await clear();
+    // Preserve user preferences (inspector profile & Google Maps key) while clearing draft session keys
+    const savedProfile = localStorage.getItem('inspector_profile');
+    const savedMapsKey = localStorage.getItem('user_google_maps_api_key');
     localStorage.clear();
-    console.log("✅ Local Offline DB cleared");
+    if (savedProfile) localStorage.setItem('inspector_profile', savedProfile);
+    if (savedMapsKey) localStorage.setItem('user_google_maps_api_key', savedMapsKey);
+    console.log("✅ Local Offline DB cleared (preferences preserved)");
   }
 }
 

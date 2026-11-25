@@ -116,8 +116,50 @@ export interface AppState {
   siteInfo: SiteInfo;
   rooms: Room[];
   currentRoomIndex: number;
-  view: 'welcome' | 'assessment' | 'summary' | 'reconstruction' | 'ai-agent-os' | 'health-dashboard';
+  view: 'welcome' | 'assessment' | 'summary' | 'reconstruction' | 'ai-agent-os' | 'health-dashboard' | 'video-walk';
   privacyMode: boolean;
+}
+
+export interface VideoWalkSiteZone {
+  id: string;
+  name: string;
+  startTimestamp: number;
+  endTimestamp: number;
+  startFormatted: string;
+  endFormatted: string;
+  summary: string;
+  roomType?: string;
+}
+
+export interface VideoWalkExtractedAsset {
+  id: string;
+  name: string;
+  category: string;
+  zoneName: string;
+  timestampSeconds: number;
+  timestampFormatted: string;
+  condition: 'Excellent' | 'Good' | 'Average' | 'Fair' | 'Poor';
+  riskRating: 'Low' | 'Medium' | 'High' | 'Extreme';
+  justification: string;
+  ageYears: string;
+  rulYears: string;
+  physicalLocation?: string;
+  confidence: number;
+  snapshotDataUrl?: string;
+  boundingBox?: BoundingBox;
+}
+
+export interface VideoWalkAnalysisSession {
+  id: string;
+  videoSource: 'youtube' | 'upload' | 'camera' | 'demo';
+  videoUrl?: string;
+  videoTitle?: string;
+  durationSeconds: number;
+  zones: VideoWalkSiteZone[];
+  assets: VideoWalkExtractedAsset[];
+  processedAt: number;
+  status: 'idle' | 'extracting_frames' | 'analyzing_gemini' | 'completed' | 'error';
+  errorMessage?: string;
 }
 
 export interface AgentMemoryItem {
@@ -211,4 +253,16 @@ export interface ChatMessage {
   role: 'user' | 'model';
   text: string;
   timestamp: number;
+}
+
+export interface ChatContextData {
+  activeView: AppState['view'];
+  viewMode: 'single' | 'portfolio';
+  currentRoomIndex?: number;
+  activeRoom?: Room;
+  editingAsset?: Asset | null;
+  selectedAssetIds?: string[];
+  siteInfo: SiteInfo;
+  rooms: Room[];
+  portfolioData?: any[];
 }

@@ -5,14 +5,30 @@ const DB_VERSION = 1;
 
 export class StorageService {
   private db: IDBDatabase | null = null;
+  private initPromise: Promise<void> | null = null;
 
   async init(): Promise<void> {
-    return new Promise((resolve, reject) => {
+    if (this.db) return;
+    if (this.initPromise) return this.initPromise;
+
+    if (typeof indexedDB === 'undefined') {
+      throw new Error('IndexedDB is unavailable in this environment');
+    }
+
+    this.initPromise = new Promise((resolve, reject) => {
       const request = indexedDB.open(DB_NAME, DB_VERSION);
 
-      request.onerror = () => reject(request.error);
+      request.onerror = () => {
+        this.initPromise = null;
+        reject(request.error);
+      };
       request.onsuccess = () => {
         this.db = request.result;
+        this.db.onversionchange = () => {
+          this.db?.close();
+          this.db = null;
+          this.initPromise = null;
+        };
         resolve();
       };
 
@@ -26,15 +42,19 @@ export class StorageService {
         }
       };
     });
+
+    return this.initPromise;
   }
 
   async saveState(siteInfo: SiteInfo, rooms: Room[]): Promise<void> {
-    if (!this.db) await this.init();
-    
+    await this.init();
+    if (!this.db) return;
+
     return new Promise((resolve, reject) => {
       const transaction = this.db!.transaction(['rooms', 'settings'], 'readwrite');
-      
+
       transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error || new Error('Transaction aborted'));
       transaction.oncomplete = () => resolve();
 
       const settingsStore = transaction.objectStore('settings');
@@ -42,13 +62,14 @@ export class StorageService {
 
       const roomsStore = transaction.objectStore('rooms');
       // Clear old rooms to ensure sync
-      roomsStore.clear(); 
-      rooms.forEach(room => roomsStore.put(room));
+      roomsStore.clear();
+      (rooms || []).forEach(room => roomsStore.put(room));
     });
   }
 
   async loadState(): Promise<{ siteInfo: SiteInfo | null, rooms: Room[] }> {
-    if (!this.db) await this.init();
+    await this.init();
+    if (!this.db) return { siteInfo: null, rooms: [] };
 
     return new Promise((resolve, reject) => {
       const transaction = this.db!.transaction(['rooms', 'settings'], 'readonly');
@@ -77,28 +98,33 @@ export class StorageService {
   }
 
   async clearData(): Promise<void> {
-    if (!this.db) await this.init();
-    const tx = this.db!.transaction(['rooms', 'settings'], 'readwrite');
+    await this.init();
+    if (!this.db) return;
+    const tx = this.db.transaction(['rooms', 'settings'], 'readwrite');
     tx.objectStore('rooms').clear();
     tx.objectStore('settings').clear();
-    return new Promise((resolve) => {
-        tx.oncomplete = () => resolve();
+    return new Promise((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error('Clear transaction aborted'));
     });
   }
 
   async deleteDatabase(): Promise<void> {
     if (this.db) {
-        this.db.close();
-        this.db = null;
+      this.db.close();
+      this.db = null;
     }
+    this.initPromise = null;
+    if (typeof indexedDB === 'undefined') return;
     return new Promise((resolve, reject) => {
-        const request = indexedDB.deleteDatabase(DB_NAME);
-        request.onsuccess = () => resolve();
-        request.onerror = () => reject(request.error);
-        request.onblocked = () => {
-             console.warn("Database deletion blocked. Closing open connections.");
-             resolve();
-        };
+      const request = indexedDB.deleteDatabase(DB_NAME);
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+      request.onblocked = () => {
+        console.warn("Database deletion blocked. Closing open connections.");
+        resolve();
+      };
     });
   }
 }

@@ -15,8 +15,11 @@ export default defineConfig(({ mode }) => {
           VitePWA({
               registerType: 'autoUpdate',
               includeAssets: ['app-icon.svg'],
+              workbox: {
+                  maximumFileSizeToCacheInBytes: 10 * 1024 * 1024,
+              },
               manifest: {
-                  name: 'Fulcrum Inspector Pro',
+                  name: 'Asset Inspector Pro',
                   short_name: 'Inspector',
                   description: 'A robust field inspection and asset management platform',
                   theme_color: '#4f46e5',
@@ -33,9 +36,25 @@ export default defineConfig(({ mode }) => {
               }
           })
       ],
+      build: {
+        rollupOptions: {
+          output: {
+            manualChunks(id) {
+              if (id.includes('node_modules')) {
+                if (id.includes('firebase')) return 'vendor-firebase';
+                if (id.includes('recharts') || id.includes('d3-')) return 'vendor-charts';
+                if (id.includes('@vis.gl') || id.includes('@googlemaps')) return 'vendor-maps';
+                if (id.includes('lucide-react')) return 'vendor-icons';
+                if (id.includes('react-dom') || id.includes('react/')) return 'vendor-react';
+              }
+            },
+          },
+        },
+      },
       define: {
-        'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY)
+        'process.env.GOOGLE_MAPS_API_KEY': JSON.stringify(
+          env.VITE_GOOGLE_MAPS_API_KEY || env.GOOGLE_MAPS_API_KEY || ''
+        ),
       },
       resolve: {
         alias: {

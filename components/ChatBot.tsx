@@ -1,9 +1,8 @@
-
-import React, { useState, useRef, useEffect } from 'react';
-import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
-import { createChatStream } from '../services/geminiService';
-import { ChatMessage } from '../types';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { createChatStream, GEMINI_MODEL } from '../services/geminiService';
+import { ChatMessage, ChatContextData } from '../types';
 import { StandardsNotebook } from './StandardsNotebook';
+import { useNotify } from './NotificationProvider';
 
 // PCM Audio Utilities
 function encode(bytes: Uint8Array) {
@@ -61,6 +60,114 @@ export const ChatBot: React.FC<ChatBotProps> = ({ contextData, privacyMode, mode
   const [liveObservations, setLiveObservations] = useState<Array<{id: string, type: string, description: string, condition: string, riskRating: string, time: Date}>>([]);
   const [isNotebookOpen, setIsNotebookOpen] = useState(false);
   const [activeClauseId, setActiveClauseId] = useState<string | null>(null);
+  const [showContextInspector, setShowContextInspector] = useState(false);
+  const { notify } = useNotify();
+
+  // Parse deep contextual telemetry from contextData
+  const isPortfolio = mode === 'portfolio' || Array.isArray(contextData) || contextData?.viewMode === 'portfolio';
+  const activeView: string = isPortfolio ? 'portfolio' : (contextData?.activeView || 'assessment');
+  const activeRoom = !isPortfolio ? (contextData?.activeRoom || (contextData?.rooms && contextData.rooms[contextData.currentRoomIndex ?? 0])) : null;
+  const editingAsset = !isPortfolio ? contextData?.editingAsset : null;
+  const siteInfo = !isPortfolio ? contextData?.siteInfo : null;
+  const rooms = !isPortfolio ? (contextData?.rooms || []) : [];
+
+  const allAssets = useMemo(() => {
+    if (isPortfolio) return [];
+    return rooms.flatMap((r: any) => (r.assets || []).map((a: any) => ({ ...a, roomName: r.roomName })));
+  }, [rooms, isPortfolio]);
+
+  const highRiskAssets = useMemo(() => {
+    return allAssets.filter((a: any) => a.riskRating === 'High' || a.riskRating === 'Extreme' || a.condition?.toLowerCase().includes('poor'));
+  }, [allAssets]);
+
+  const totalCapexExposure = useMemo(() => {
+    return allAssets.reduce((sum: number, a: any) => sum + (Number(a.cost) || 0), 0);
+  }, [allAssets]);
+
+  // Dynamic context header label
+  const contextSummaryLabel = useMemo(() => {
+    if (isPortfolio) {
+      const siteCount = Array.isArray(contextData) ? contextData.length : (contextData?.portfolioData?.length || 0);
+      return `Portfolio Mode • ${siteCount} Sites Analyzed`;
+    }
+    if (editingAsset) {
+      return `Focused Asset: "${editingAsset.category}" (${editingAsset.condition || 'Inspecting'})`;
+    }
+    switch (activeView) {
+      case 'assessment':
+        return `Room: ${activeRoom?.roomName || 'Current Room'} • ${activeRoom?.assets?.length || 0} Assets`;
+      case 'health-dashboard':
+        return `Capital Health • ${highRiskAssets.length} High-Risk Assets ($${totalCapexExposure.toLocaleString()})`;
+      case 'video-walk':
+        return `Site Walk Video • Multimodal Grounding`;
+      case 'reconstruction':
+        return `Blueprint & Spatial Layout Reconstruction`;
+      case 'ai-agent-os':
+        return `AI Agent OS • Knowledge Graph & Causal Edges`;
+      case 'summary':
+        return `Assessment Summary & Sign-Off`;
+      default:
+        return `${siteInfo?.name || 'Facility Condition Assessment'}`;
+    }
+  }, [isPortfolio, editingAsset, activeView, activeRoom, highRiskAssets.length, totalCapexExposure, siteInfo, contextData]);
+
+  // Context-aware smart prompt suggestions
+  const contextSuggestions = useMemo(() => {
+    if (isPortfolio) {
+      return [
+        "Compare worst-performing sites by risk",
+        "5-year portfolio renewal expenditure",
+        "Sites with highest critical compliance gaps"
+      ];
+    }
+    if (editingAsset) {
+      return [
+        `Apply Scenario 3 to ${editingAsset.category}`,
+        `Is replacement or repair better for ${editingAsset.category}?`,
+        `Evaluate remaining useful life (${editingAsset.rul} yrs)`
+      ];
+    }
+    switch (activeView) {
+      case 'assessment':
+        return [
+          activeRoom ? `Analyze risks in "${activeRoom.roomName}"` : "Analyze room risk profile",
+          "Which asset here has highest failure impact?",
+          "Generate maintenance work order for this room"
+        ];
+      case 'health-dashboard':
+        return [
+          "What drives the highest CAPEX peak?",
+          "Identify assets with RUL ≤ 2 years",
+          "Explain BHI (Building Health Index)"
+        ];
+      case 'video-walk':
+        return [
+          "How are assets extracted from video frames?",
+          "Explain temporal keyframe deduplication",
+          "Check safety hazards detected in walkthrough"
+        ];
+      case 'reconstruction':
+        return [
+          "Check architectural spatial compliance",
+          "Evaluate egress routes and containment"
+        ];
+      case 'ai-agent-os':
+        return [
+          "Simulate cascade failure from power supply",
+          "Show multi-hop graph dependency path"
+        ];
+      case 'summary':
+        return [
+          "Executive condition summary for report",
+          "Total capital backlog renewal budget"
+        ];
+      default:
+        return [
+          "Review site asset risk profile",
+          "Apply ISO 55001 Scenario 3 logic"
+        ];
+    }
+  }, [isPortfolio, editingAsset, activeView, activeRoom]);
 
   const findMatchingClauseId = (content: string): string | null => {
     const normalized = content.toLowerCase();
@@ -152,13 +259,18 @@ export const ChatBot: React.FC<ChatBotProps> = ({ contextData, privacyMode, mode
 
   useEffect(() => {
     return () => {
-      // Ensure camera, audio streams, intervals, and audio contexts are cleanly torn down on unmount
+      // Ensure camera, audio streams, WebSocket, intervals, and audio contexts are cleanly torn down on unmount
       if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
       if (liveSessionRef.current) {
         try {
-          const { stream, scriptProcessor } = liveSessionRef.current;
+          const { stream, scriptProcessor, audioSource, ws } = liveSessionRef.current;
           stream?.getTracks()?.forEach((track: any) => track.stop());
           scriptProcessor?.disconnect();
+          audioSource?.disconnect();
+          if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+            try { ws.send(JSON.stringify({ type: 'close' })); } catch {}
+            ws.close();
+          }
         } catch (e) {
           console.warn("Error cleaning up live stream", e);
         }
@@ -177,18 +289,21 @@ export const ChatBot: React.FC<ChatBotProps> = ({ contextData, privacyMode, mode
     };
   }, []);
 
-  const handleSend = async () => {
-    if (!input.trim() || isLoading) return;
+  const handleSend = async (overrideText?: string) => {
+    const textToSend = (overrideText ?? input).trim();
+    if (!textToSend || isLoading) return;
 
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'user',
-      text: input,
+      text: textToSend,
       timestamp: Date.now()
     };
 
     setMessages(prev => [...prev, userMsg]);
-    setInput('');
+    if (!overrideText) {
+      setInput('');
+    }
     setIsLoading(true);
 
     try {
@@ -239,22 +354,18 @@ export const ChatBot: React.FC<ChatBotProps> = ({ contextData, privacyMode, mode
     setIsLiveActive(true);
     setLiveTranscription("Initializing Multimodal Session...");
 
+    let stream: MediaStream | null = null;
     try {
-      const ai = new GoogleGenAI({ 
-        apiKey: process.env.GEMINI_API_KEY || process.env.API_KEY || '',
-        httpOptions: {
-          headers: {
-            'User-Agent': 'aistudio-build',
-          }
-        }
-      });
-      
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error('Camera and microphone capture are unavailable in this browser context.');
+      }
+
       audioContextInRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
       audioContextOutRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
       const outputNode = audioContextOutRef.current.createGain();
       outputNode.connect(audioContextOutRef.current.destination);
 
-      const stream = await navigator.mediaDevices.getUserMedia({ 
+      stream = await navigator.mediaDevices.getUserMedia({ 
         audio: true, 
         video: { width: 640, height: 480, frameRate: 15 } 
       });
@@ -263,15 +374,20 @@ export const ChatBot: React.FC<ChatBotProps> = ({ contextData, privacyMode, mode
         videoRef.current.srcObject = stream;
       }
 
-      const siteName = privacyMode ? "REDACTED_SITE" : (Array.isArray(contextData) ? "Multiple Portfolio Sites" : contextData.siteInfo.name);
-      const assetSummary = Array.isArray(contextData) 
-        ? contextData.map(s => `Site: ${s.siteInfo?.name}, Assets: ${s.rooms?.length || 0} rooms analyzed`).join('; ')
-        : (contextData.rooms || []).flatMap((r: any) => (r.assets || []).map((a: any) => `${a.category} (${a.condition})`)).join(', ');
+      const portfolioItems = Array.isArray(contextData)
+        ? contextData
+        : (Array.isArray(contextData?.portfolioData) ? contextData.portfolioData : []);
+      const siteName = privacyMode
+        ? "REDACTED_SITE"
+        : (isPortfolio ? "Multiple Portfolio Sites" : (contextData?.siteInfo?.name || "Facility Inspection"));
+      const assetSummary = isPortfolio
+        ? portfolioItems.map((s: any) => `Site: ${s?.siteInfo?.name || 'Unnamed'}, Assets: ${s?.rooms?.length || 0} rooms analyzed`).join('; ')
+        : (contextData?.rooms || []).flatMap((r: any) => (r?.assets || []).map((a: any) => `${a.category} (${a.condition})`)).join(', ');
 
       const systemInstruction = `
         You are a specialized Engineering Auditor in a LIVE MULTIMODAL session for ${siteName}.
         
-        DATA CONTEXT: ${assetSummary}
+        DATA CONTEXT: ${assetSummary || 'No prior assets recorded yet.'}
 
         INSTRUCTIONS:
         - You can SEE the video feed from the inspector's camera.
@@ -283,173 +399,198 @@ export const ChatBot: React.FC<ChatBotProps> = ({ contextData, privacyMode, mode
         - Provide immediate, concise, and technical feedback.
       `;
 
-      const sessionPromise = ai.live.connect({
-        model: 'gemini-3.1-flash-live-preview',
-        callbacks: {
-          onopen: () => {
-            setLiveTranscription("Vision/Audio Active. Point camera at assets.");
-            
-            const audioSource = audioContextInRef.current!.createMediaStreamSource(stream);
-            const scriptProcessor = audioContextInRef.current!.createScriptProcessor(4096, 1, 1);
-            
-            scriptProcessor.onaudioprocess = (e) => {
-              const inputData = e.inputBuffer.getChannelData(0);
-              const l = inputData.length;
-              const int16 = new Int16Array(l);
-              for (let i = 0; i < l; i++) int16[i] = inputData[i] * 32768;
-              
-              sessionPromise.then((session) => {
-                session.sendRealtimeInput({ 
-                  audio: { data: encode(new Uint8Array(int16.buffer)), mimeType: 'audio/pcm;rate=16000' }
-                });
-              });
-            };
-            
-            audioSource.connect(scriptProcessor);
-            scriptProcessor.connect(audioContextInRef.current!.destination);
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const ws = new WebSocket(`${wsProtocol}//${window.location.host}/api/gemini/live`);
+      let mediaCaptureStarted = false;
 
-            // Stream Video Frames (Multimodal Live)
-            frameIntervalRef.current = window.setInterval(() => {
-              if (videoRef.current && canvasRef.current && canvasRef.current.getContext('2d')) {
-                const ctx = canvasRef.current.getContext('2d')!;
-                canvasRef.current.width = 480; // slightly higher res for better spatial memory
-                canvasRef.current.height = 360;
-                ctx.drawImage(videoRef.current, 0, 0, 480, 360);
-                
-                const base64Data = canvasRef.current.toDataURL('image/jpeg', 0.55).split(',')[1];
-                sessionPromise.then((session) => {
-                  session.sendRealtimeInput({
-                    video: { data: base64Data, mimeType: 'image/jpeg' }
-                  });
-                });
-              }
-            }, 1000); 
+      liveSessionRef.current = { ws, stream, scriptProcessor: null, audioSource: null };
 
-            liveSessionRef.current = { sessionPromise, scriptProcessor, stream };
-          },
-          onmessage: async (message: LiveServerMessage) => {
-            if (message.serverContent?.modelTurn?.parts) {
-              message.serverContent.modelTurn.parts.forEach((part: any) => {
-                 if (part.functionCall && part.functionCall.name === 'log_observation') {
-                    const args = part.functionCall.args as any;
-                    
-                    // Client-side fuzzy deduplication
-                    setLiveObservations(prev => {
-                      const isDuplicate = prev.some(obs => 
-                        obs.type === args.type && 
-                        (obs.description.toLowerCase().includes(args.description.toLowerCase()) || 
-                         args.description.toLowerCase().includes(obs.description.toLowerCase()))
-                      );
+      const beginMediaCapture = () => {
+        if (mediaCaptureStarted || !audioContextInRef.current || !stream) return;
+        mediaCaptureStarted = true;
+        setLiveTranscription("Vision/Audio Active. Point camera at assets.");
 
-                      if (isDuplicate) return prev;
+        const audioSource = audioContextInRef.current.createMediaStreamSource(stream);
+        const scriptProcessor = audioContextInRef.current.createScriptProcessor(4096, 1, 1);
 
-                      return [{
-                        id: crypto.randomUUID(),
-                        type: args.type || 'asset',
-                        description: args.description || 'Unknown observation',
-                        condition: args.condition || 'N/A',
-                        riskRating: args.riskRating || 'Low',
-                        time: new Date()
-                      }, ...prev].slice(0, 10); // Keep more history for active sessions
-                    });
+        scriptProcessor.onaudioprocess = (e) => {
+          if (ws.readyState !== WebSocket.OPEN) return;
+          const inputData = e.inputBuffer.getChannelData(0);
+          const l = inputData.length;
+          const int16 = new Int16Array(l);
+          for (let i = 0; i < l; i++) {
+            const sample = Math.max(-1, Math.min(1, inputData[i]));
+            int16[i] = sample < 0 ? sample * 32768 : sample * 32767;
+          }
+          try {
+            ws.send(JSON.stringify({
+              type: 'audio',
+              data: encode(new Uint8Array(int16.buffer)),
+            }));
+          } catch {}
+        };
 
-                    // Acknowledge the function call to the model
-                    sessionPromise.then(session => {
-                      (session as any).send({
-                         clientContent: {
-                           turns: [{
-                             role: "user",
-                             parts: [{
-                               functionResponse: {
-                                 name: "log_observation",
-                                 response: { result: "logged successfully" }
-                               }
-                             }]
-                           }],
-                           turnComplete: true
-                         }
-                      });
-                    });
-                 }
-              });
+        audioSource.connect(scriptProcessor);
+        scriptProcessor.connect(audioContextInRef.current.destination);
+
+        // Stream Video Frames at 1 FPS (Multimodal Live)
+        frameIntervalRef.current = window.setInterval(() => {
+          if (ws.readyState !== WebSocket.OPEN) return;
+          if (videoRef.current && videoRef.current.readyState >= 2 && canvasRef.current) {
+            const ctx = canvasRef.current.getContext('2d');
+            if (!ctx) return;
+            canvasRef.current.width = 480;
+            canvasRef.current.height = 360;
+            ctx.drawImage(videoRef.current, 0, 0, 480, 360);
+
+            const base64Data = canvasRef.current.toDataURL('image/jpeg', 0.55).split(',')[1];
+            if (base64Data) {
+              try {
+                ws.send(JSON.stringify({ type: 'video', data: base64Data }));
+              } catch {}
             }
+          }
+        }, 1000);
 
-            if (message.serverContent?.outputTranscription) {
-              setLiveTranscription(prev => (prev.length > 80 ? "" : prev) + message.serverContent!.outputTranscription!.text);
-            }
+        liveSessionRef.current = { ws, scriptProcessor, audioSource, stream };
+      };
 
-            const base64Audio = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
-            if (base64Audio && audioContextOutRef.current) {
-              const ctx = audioContextOutRef.current;
-              nextStartTimeRef.current = Math.max(nextStartTimeRef.current, ctx.currentTime);
-              const audioBuffer = await decodeAudioData(decode(base64Audio), ctx, 24000, 1);
-              const source = ctx.createBufferSource();
-              source.buffer = audioBuffer;
-              source.connect(outputNode);
-              source.addEventListener('ended', () => audioSourcesRef.current.delete(source));
-              source.start(nextStartTimeRef.current);
-              nextStartTimeRef.current += audioBuffer.duration;
-              audioSourcesRef.current.add(source);
-            }
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ type: 'setup', systemInstruction }));
+      };
 
-            if (message.serverContent?.interrupted) {
-              for (const s of audioSourcesRef.current.values()) try { s.stop(); } catch(e) {}
-              audioSourcesRef.current.clear();
-              nextStartTimeRef.current = 0;
-            }
-          },
-          onerror: (e) => {
-            console.error('Live Error:', e);
-            stopLiveMode();
-          },
-          onclose: () => stopLiveMode()
-        },
-        config: {
-          responseModalities: [Modality.AUDIO],
-          speechConfig: {
-            voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } },
-          },
-          systemInstruction,
-          outputAudioTranscription: {},
-          tools: [{
-            functionDeclarations: [
-              {
-                name: "log_observation",
-                description: "Logs an observed hazard or asset directly to the inspector's dashboard screen in real-time.",
-                parameters: {
-                  type: 'OBJECT' as any,
-                  properties: {
-                    type: { type: 'STRING' as any, description: "Enum: 'hazard' or 'asset'" },
-                    description: { type: 'STRING' as any, description: "Detailed description of the observation" },
-                    condition: { type: 'STRING' as any, description: "Condition of the asset (e.g., 'Good', 'Poor'), or N/A for hazards" },
-                    riskRating: { type: 'STRING' as any, description: "Risk rating (e.g., 'Low', 'Medium', 'High', 'Extreme')" }
-                  },
-                  required: ["type", "description", "riskRating"]
-                }
-              }
-            ]
-          }]
-        },
-      });
+      ws.onmessage = async (event) => {
+        let msg: any;
+        try {
+          msg = JSON.parse(typeof event.data === 'string' ? event.data : '');
+        } catch {
+          return;
+        }
 
-    } catch (e) {
+        if (msg.type === 'ready') {
+          beginMediaCapture();
+          return;
+        }
+
+        if (msg.type === 'tool_call' && msg.name === 'log_observation') {
+          const args = msg.args || {};
+          const desc = String(args?.description || 'Unknown observation');
+
+          // Client-side fuzzy deduplication
+          setLiveObservations(prev => {
+            const isDuplicate = prev.some(obs =>
+              obs.type === (args?.type || 'asset') &&
+              (obs.description.toLowerCase().includes(desc.toLowerCase()) ||
+               desc.toLowerCase().includes(obs.description.toLowerCase()))
+            );
+            if (isDuplicate) return prev;
+
+            return [{
+              id: crypto.randomUUID(),
+              type: args?.type || 'asset',
+              description: desc,
+              condition: args?.condition || 'N/A',
+              riskRating: args?.riskRating || 'Low',
+              time: new Date()
+            }, ...prev].slice(0, 10);
+          });
+          return;
+        }
+
+        if (msg.type === 'audio' && msg.data && audioContextOutRef.current && audioContextOutRef.current.state !== 'closed') {
+          try {
+            const ctx = audioContextOutRef.current;
+            nextStartTimeRef.current = Math.max(nextStartTimeRef.current, ctx.currentTime);
+            const audioBuffer = await decodeAudioData(decode(msg.data), ctx, 24000, 1);
+            const source = ctx.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(outputNode);
+            source.addEventListener('ended', () => audioSourcesRef.current.delete(source));
+            source.start(nextStartTimeRef.current);
+            nextStartTimeRef.current += audioBuffer.duration;
+            audioSourcesRef.current.add(source);
+          } catch (audioErr) {
+            console.warn('Live audio decode skipped:', audioErr);
+          }
+          return;
+        }
+
+        if (msg.type === 'transcription' && msg.text) {
+          setLiveTranscription(prev => (prev.length > 140 ? "" : prev) + msg.text);
+          return;
+        }
+
+        if (msg.type === 'interrupted') {
+          for (const s of audioSourcesRef.current.values()) try { s.stop(); } catch {}
+          audioSourcesRef.current.clear();
+          nextStartTimeRef.current = 0;
+          return;
+        }
+
+        if (msg.type === 'error') {
+          notify(msg.message || 'Live multimodal session disconnected.', 'warning');
+          stopLiveMode();
+          return;
+        }
+
+        if (msg.type === 'closed') {
+          stopLiveMode();
+        }
+      };
+
+      ws.onerror = (e) => {
+        console.error('Live WebSocket error:', e);
+        notify('Live multimodal session disconnected.', 'warning');
+        stopLiveMode();
+      };
+
+      ws.onclose = () => {
+        stopLiveMode();
+      };
+    } catch (e: any) {
       console.error("Failed to start live mode:", e);
-      setIsLiveActive(false);
+      stream?.getTracks().forEach(track => track.stop());
+      stopLiveMode();
+      notify(e?.message || 'Unable to start Live Multimodal Audit. Check camera/microphone permissions.', 'error');
     }
   };
 
   const stopLiveMode = () => {
-    if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
-    if (liveSessionRef.current) {
-      const { stream, scriptProcessor } = liveSessionRef.current;
-      stream.getTracks().forEach((track: any) => track.stop());
-      scriptProcessor.disconnect();
-      liveSessionRef.current = null;
+    if (frameIntervalRef.current) {
+      clearInterval(frameIntervalRef.current);
+      frameIntervalRef.current = null;
     }
-    for (const s of audioSourcesRef.current.values()) try { s.stop(); } catch(e) {}
+    if (liveSessionRef.current) {
+      const { stream, scriptProcessor, audioSource, ws } = liveSessionRef.current;
+      liveSessionRef.current = null;
+      try { stream?.getTracks()?.forEach((track: any) => track.stop()); } catch {}
+      try { scriptProcessor?.disconnect(); } catch {}
+      try { audioSource?.disconnect(); } catch {}
+      try {
+        if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'close' }));
+          }
+          ws.close();
+        }
+      } catch {}
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    for (const s of audioSourcesRef.current.values()) {
+      try { s.stop(); } catch {}
+    }
     audioSourcesRef.current.clear();
-    if (audioContextInRef.current) audioContextInRef.current.close();
-    if (audioContextOutRef.current) audioContextOutRef.current.close();
+    nextStartTimeRef.current = 0;
+    if (audioContextInRef.current && audioContextInRef.current.state !== 'closed') {
+      try { void audioContextInRef.current.close(); } catch {}
+    }
+    audioContextInRef.current = null;
+    if (audioContextOutRef.current && audioContextOutRef.current.state !== 'closed') {
+      try { void audioContextOutRef.current.close(); } catch {}
+    }
+    audioContextOutRef.current = null;
     setIsLiveActive(false);
     setLiveTranscription("");
   };
@@ -501,6 +642,81 @@ export const ChatBot: React.FC<ChatBotProps> = ({ contextData, privacyMode, mode
                 {isLiveActive && <button onClick={stopLiveMode} className="bg-red-700 p-1.5 rounded-full"><span className="material-icons text-sm">call_end</span></button>}
               </div>
             </div>
+
+            {/* Context Awareness Telemetry Ribbon */}
+            {!isLiveActive && (
+              <div className="bg-slate-900 border-b border-slate-800 px-3 py-2 flex items-center justify-between text-xs text-slate-300 shrink-0">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="relative flex h-2 w-2 shrink-0">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                  </span>
+                  <span className="text-[10px] font-mono uppercase tracking-wider text-emerald-400 font-bold shrink-0">CONTEXT AWARE</span>
+                  <span className="text-slate-600 hidden sm:inline">•</span>
+                  <div className="truncate text-[11px] font-medium text-slate-200" title={contextSummaryLabel}>
+                    {contextSummaryLabel}
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowContextInspector(!showContextInspector)}
+                  className={`text-[10px] px-2 py-0.5 rounded flex items-center gap-1 transition-all shrink-0 ml-2 cursor-pointer ${
+                    showContextInspector ? 'bg-indigo-600 text-white font-bold shadow-sm' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
+                  }`}
+                  title="Inspect Real-Time Injected Context Telemetry"
+                >
+                  <span className="material-icons text-[12px]">{showContextInspector ? 'expand_less' : 'visibility'}</span>
+                  <span>{showContextInspector ? 'Hide' : 'Inspect'}</span>
+                </button>
+              </div>
+            )}
+
+            {/* Context Inspector Card */}
+            {showContextInspector && !isLiveActive && (
+              <div className="bg-slate-950 border-b border-indigo-500/30 p-3 text-xs text-slate-200 shrink-0 animate-fadeIn space-y-2">
+                <div className="flex items-center justify-between pb-1.5 border-b border-slate-800">
+                  <div className="flex items-center gap-1.5 font-bold text-indigo-400">
+                    <span className="material-icons text-sm">hub</span>
+                    <span className="text-[11px]">Real-Time Injected Grounding Telemetry</span>
+                  </div>
+                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-mono font-semibold">
+                    Live Telemetry Synced
+                  </span>
+                </div>
+                
+                <div className="grid grid-cols-2 gap-2 text-[10px]">
+                  <div className="bg-slate-900 p-2 rounded border border-slate-800">
+                    <span className="text-slate-400 block text-[9px] uppercase font-bold tracking-wider">Active Screen</span>
+                    <span className="font-semibold text-white capitalize">{activeView.replace('-', ' ')}</span>
+                  </div>
+                  <div className="bg-slate-900 p-2 rounded border border-slate-800">
+                    <span className="text-slate-400 block text-[9px] uppercase font-bold tracking-wider">Target Scope</span>
+                    <span className="font-semibold text-white truncate block">
+                      {editingAsset ? `Editing: ${editingAsset.category}` : (activeRoom?.roomName || siteInfo?.name || 'Site Overview')}
+                    </span>
+                  </div>
+                  <div className="bg-slate-900 p-2 rounded border border-slate-800">
+                    <span className="text-slate-400 block text-[9px] uppercase font-bold tracking-wider">In-Focus Assets</span>
+                    <span className="font-semibold text-white">
+                      {activeRoom ? `${activeRoom.assets?.length || 0} in Room (${allAssets.length} Site Total)` : `${allAssets.length} Total Registered`}
+                    </span>
+                  </div>
+                  <div className="bg-slate-900 p-2 rounded border border-slate-800">
+                    <span className="text-slate-400 block text-[9px] uppercase font-bold tracking-wider">Critical Risk Focus</span>
+                    <span className={`font-semibold ${highRiskAssets.length > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                      {highRiskAssets.length} High/Extreme
+                    </span>
+                  </div>
+                </div>
+
+                <div className="pt-1.5 border-t border-slate-800/80 flex items-center justify-between text-[10px] text-slate-400">
+                  <div className="flex items-center gap-1">
+                    <span className="material-icons text-[12px] text-amber-400">gavel</span>
+                    <span>ISO 55001 & Scenario 3 Bound</span>
+                  </div>
+                  <span className="text-slate-500 font-mono text-[9px]">Model: {GEMINI_MODEL}</span>
+                </div>
+              </div>
+            )}
 
             <div className="flex-1 overflow-y-auto p-4 bg-gray-50 space-y-4">
               {isLiveActive && (
@@ -554,17 +770,47 @@ export const ChatBot: React.FC<ChatBotProps> = ({ contextData, privacyMode, mode
             </div>
 
             {!isLiveActive && (
-              <div className="p-4 bg-white border-t shrink-0">
+              <div className="p-3 bg-white border-t shrink-0 space-y-2">
+                {/* Dynamic Context Suggestions */}
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar text-xs">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider shrink-0 flex items-center gap-1">
+                    <span className="material-icons text-[12px] text-indigo-500">auto_awesome</span>
+                    Prompt:
+                  </span>
+                  {contextSuggestions.map((promptText, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => handleSend(promptText)}
+                      disabled={isLoading}
+                      className="shrink-0 px-2.5 py-1 rounded-full bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-[11px] font-medium transition-all hover:scale-[1.02] active:scale-95 disabled:opacity-50 text-left cursor-pointer"
+                    >
+                      {promptText}
+                    </button>
+                  ))}
+                </div>
+
                 <div className="flex gap-2">
                   <input
                     type="text"
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-                    placeholder="Ask about remedial works..."
+                    placeholder={
+                      editingAsset 
+                        ? `Ask about ${editingAsset.category}...` 
+                        : activeRoom 
+                        ? `Ask about ${activeRoom.roomName}...` 
+                        : "Ask about remedial works, risks, CAPEX..."
+                    }
                     className="flex-1 px-4 py-2 border rounded-full text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
                   />
-                  <button onClick={handleSend} disabled={isLoading || !input.trim()} className="w-10 h-10 bg-indigo-600 text-white rounded-full flex items-center justify-center cursor-pointer"><span className="material-icons text-sm">send</span></button>
+                  <button 
+                    onClick={() => handleSend()} 
+                    disabled={isLoading || !input.trim()} 
+                    className="w-10 h-10 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white rounded-full flex items-center justify-center cursor-pointer transition-all disabled:opacity-40"
+                  >
+                    <span className="material-icons text-sm">send</span>
+                  </button>
                 </div>
               </div>
             )}

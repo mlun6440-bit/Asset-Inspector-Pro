@@ -191,19 +191,50 @@ export const RawDetectedAssetArraySchema = z.array(RawDetectedAssetSchema);
  */
 export function safeParseJson<T>(rawText: string | undefined | null, fallback: T): T {
   if (!rawText || typeof rawText !== 'string') return fallback;
+  const trimmed = rawText.trim();
+  if (!trimmed) return fallback;
+
+  // 1. Direct parse attempt
   try {
-    let clean = rawText.trim();
-    // Remove markdown codeblock wrapping if present
-    if (clean.startsWith('```json')) {
-      clean = clean.replace(/^```json\s*/, '').replace(/\s*```$/, '');
-    } else if (clean.startsWith('```')) {
-      clean = clean.replace(/^```\s*/, '').replace(/\s*```$/, '');
-    }
-    return JSON.parse(clean) as T;
-  } catch (err) {
-    console.warn('[SafeJSONParse] Failed to parse JSON payload, returning fallback', err, rawText);
-    return fallback;
+    return JSON.parse(trimmed) as T;
+  } catch {
+    // continue to extraction strategies
   }
+
+  // 2. Extract fenced ```json ... ``` or ``` ... ``` block anywhere in response
+  const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fencedMatch && fencedMatch[1]) {
+    try {
+      return JSON.parse(fencedMatch[1].trim()) as T;
+    } catch {
+      // continue to bracket extraction
+    }
+  }
+
+  // 3. Extract outermost JSON object or array
+  const firstBrace = trimmed.indexOf('{');
+  const firstBracket = trimmed.indexOf('[');
+  const startIdx =
+    firstBrace === -1
+      ? firstBracket
+      : firstBracket === -1
+      ? firstBrace
+      : Math.min(firstBrace, firstBracket);
+
+  if (startIdx !== -1) {
+    const endChar = trimmed[startIdx] === '[' ? ']' : '}';
+    const endIdx = trimmed.lastIndexOf(endChar);
+    if (endIdx > startIdx) {
+      try {
+        return JSON.parse(trimmed.slice(startIdx, endIdx + 1)) as T;
+      } catch {
+        // fall through to fallback
+      }
+    }
+  }
+
+  console.warn('[SafeJSONParse] Failed to parse JSON payload, returning fallback');
+  return fallback;
 }
 
 /**
@@ -254,4 +285,117 @@ export function sanitizeDetectedAssets(rawJson: unknown): Asset[] {
       ],
     };
   });
+}
+
+// ==========================================
+// Video Walk Extractor Schemas
+// ==========================================
+
+export const VideoWalkSiteZoneSchema = z.object({
+  id: z.string().default(() => crypto.randomUUID()),
+  name: z.string().min(1),
+  startTimestamp: z.number().nonnegative(),
+  endTimestamp: z.number().nonnegative(),
+  startFormatted: z.string().default('00:00'),
+  endFormatted: z.string().default('00:00'),
+  summary: z.string().default(''),
+  roomType: z.string().optional(),
+});
+
+export const VideoWalkExtractedAssetSchema = z.object({
+  id: z.string().default(() => crypto.randomUUID()),
+  name: z.string().min(1),
+  category: z.string().default('General Building Fabric'),
+  zoneName: z.string().default('General Zone'),
+  timestampSeconds: z.number().nonnegative().default(0),
+  timestampFormatted: z.string().default('00:00'),
+  condition: z.enum(['Excellent', 'Good', 'Average', 'Fair', 'Poor']).default('Good'),
+  riskRating: z.enum(['Low', 'Medium', 'High', 'Extreme']).default('Low'),
+  justification: z.string().default('Visual assessment recorded during video site walk.'),
+  ageYears: z.string().default('5'),
+  rulYears: z.string().default('10'),
+  physicalLocation: z.string().optional(),
+  confidence: z.number().min(0).max(1).default(0.92),
+  snapshotDataUrl: z.string().optional(),
+  boundingBox: BoundingBoxSchema.optional(),
+});
+
+export const RawVideoWalkPayloadSchema = z.object({
+  zones: z.array(z.any()).default([]),
+  assets: z.array(z.any()).default([]),
+});
+
+export function sanitizeVideoWalkResults(rawJson: unknown): {
+  zones: z.infer<typeof VideoWalkSiteZoneSchema>[];
+  assets: z.infer<typeof VideoWalkExtractedAssetSchema>[];
+} {
+  const parsed = RawVideoWalkPayloadSchema.safeParse(rawJson);
+  if (!parsed.success) {
+    return { zones: [], assets: [] };
+  }
+
+  const zones = (parsed.data.zones || []).map((zItem, index) => {
+    const startSec = Math.max(0, Number(zItem.startTimestamp ?? (index * 60)));
+    const endSec = Math.max(startSec + 10, Number(zItem.endTimestamp ?? ((index + 1) * 60)));
+    const formatTime = (sec: number) => {
+      const m = Math.floor(sec / 60);
+      const s = Math.floor(sec % 60);
+      return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    };
+
+    return {
+      id: zItem.id || `zone-${index + 1}`,
+      name: zItem.name || `Facility Zone ${index + 1}`,
+      startTimestamp: startSec,
+      endTimestamp: endSec,
+      startFormatted: zItem.startFormatted || formatTime(startSec),
+      endFormatted: zItem.endFormatted || formatTime(endSec),
+      summary: zItem.summary || 'Surveyed area during video walkthrough.',
+      roomType: zItem.roomType || 'Facility Room',
+    };
+  });
+
+  const assets = (parsed.data.assets || []).map((aItem, index) => {
+    const sec = Math.max(0, Number(aItem.timestampSeconds ?? 0));
+    const m = Math.floor(sec / 60);
+    const s = Math.floor(sec % 60);
+    const formatted = aItem.timestampFormatted || `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+
+    const bbox = aItem.boundingBox
+      ? {
+          x: Math.max(0, Math.min(1, Number(aItem.boundingBox.x) || 0)),
+          y: Math.max(0, Math.min(1, Number(aItem.boundingBox.y) || 0)),
+          width: Math.max(0.02, Math.min(1, Number(aItem.boundingBox.width) || 0.5)),
+          height: Math.max(0.02, Math.min(1, Number(aItem.boundingBox.height) || 0.5)),
+        }
+      : undefined;
+
+    const condition = ['Excellent', 'Good', 'Average', 'Fair', 'Poor'].includes(aItem.condition)
+      ? aItem.condition
+      : 'Good';
+
+    const riskRating = ['Low', 'Medium', 'High', 'Extreme'].includes(aItem.riskRating)
+      ? aItem.riskRating
+      : 'Low';
+
+    return {
+      id: aItem.id || `video-asset-${index + 1}`,
+      name: aItem.name || `${aItem.category || 'Asset'} - Unit #${index + 1}`,
+      category: aItem.category || 'Building Structural & Fabric,Walls',
+      zoneName: aItem.zoneName || (zones[0]?.name ?? 'General Facility'),
+      timestampSeconds: sec,
+      timestampFormatted: formatted,
+      condition,
+      riskRating,
+      justification: aItem.justification || 'Detected during automated video walkthrough inspection.',
+      ageYears: String(aItem.ageYears ?? aItem.age ?? '5'),
+      rulYears: String(aItem.rulYears ?? aItem.rul ?? '15'),
+      physicalLocation: aItem.physicalLocation || 'Visible on video walk path',
+      confidence: Math.max(0.5, Math.min(1, Number(aItem.confidence) || 0.92)),
+      snapshotDataUrl: aItem.snapshotDataUrl,
+      boundingBox: bbox,
+    };
+  });
+
+  return { zones, assets };
 }

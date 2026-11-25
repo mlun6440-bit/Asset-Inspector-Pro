@@ -2,7 +2,7 @@
 // Updated Live Sync Configuration
 import React, { useState, useEffect, useMemo } from 'react';
 import { SiteInfo, Room, AppState, Asset, ChatMessage, AuditEntry } from './types';
-import { firebaseService } from './services/firebaseService';
+import { firebaseService, sanitizeInspectionId } from './services/firebaseService';
 import { detectAssetsWithBoundingBoxes, cropImage, summarizeConversation, analyzeDocument, extractAssetsFromVendorRegister } from './services/geminiService';
 import { usePresenceSession } from './hooks/usePresenceSession';
 import { ChatBot } from './components/ChatBot';
@@ -16,6 +16,8 @@ import { AIAgentOS } from './components/AIAgentOS';
 import { HealthDashboardView } from './components/HealthDashboardView';
 import { EditAssetModal } from './components/EditAssetModal';
 import { MobileAppFrame } from './components/MobileAppFrame';
+import { VideoSiteWalkView } from './components/VideoSiteWalkView';
+import { useNotify } from './components/NotificationProvider';
 import { format, subMonths, startOfMonth, eachMonthOfInterval, isSameMonth, parseISO } from 'date-fns';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer, AreaChart, Area } from 'recharts';
 
@@ -28,6 +30,7 @@ import {
 } from './services/googleMapsService';
 
 function App() {
+  const { notify, confirmAction } = useNotify();
   const [loading, setLoading] = useState(true);
   const [showSmartRoomFinder, setShowSmartRoomFinder] = useState(false);
   const [processing, setProcessing] = useState(false);
@@ -96,7 +99,7 @@ function App() {
 
   const currentInspectionId = useMemo(() => {
       if (!appState.siteInfo.name) return '';
-      return appState.siteInfo.name.trim().replace(/\s+/g, '_').toLowerCase();
+      return sanitizeInspectionId(appState.siteInfo.name);
   }, [appState.siteInfo.name]);
 
   const {
@@ -327,7 +330,7 @@ function App() {
 
     if (lat === undefined || lng === undefined) {
       try {
-        const resolved = await geocodeAddressGoogle(suggestion.label);
+        const resolved = await geocodeAddressGoogle(suggestion.label, suggestion.placeId);
         if (resolved) {
           lat = resolved.latitude;
           lng = resolved.longitude;
@@ -361,7 +364,7 @@ function App() {
       if (!file) return;
 
       if (!hasEditLock) {
-          alert("Edit Lock Required: You currently do not have edit control for this session.");
+          notify("Edit Lock Required: You currently do not have edit control for this session.", "warning");
           e.target.value = '';
           return;
       }
@@ -393,19 +396,20 @@ function App() {
                               documents: [...(prev.siteInfo.documents || []), newDoc]
                           }
                       }));
+                      notify(`Analyzed and attached "${file.name}".`, "success");
                   } else {
-                      alert("Unsupported file type. Please upload PDF or image.");
+                      notify("Unsupported file type. Please upload PDF or image.", "warning");
                   }
               } catch (innerErr) {
                   console.error("Document analysis error:", innerErr);
-                  alert("Error analyzing document. Please try again.");
+                  notify("Error analyzing document. Please try again.", "error");
               } finally {
                   setProcessing(false);
                   setLoadingText('');
               }
           };
           reader.onerror = () => {
-              alert("Failed to read file.");
+              notify("Failed to read file.", "error");
               setProcessing(false);
               setLoadingText('');
           };
@@ -426,7 +430,7 @@ function App() {
       if (!file) return;
 
       if (!hasEditLock) {
-          alert("Edit Lock Required: You currently do not have edit control for this session.");
+          notify("Edit Lock Required: You currently do not have edit control for this session.", "warning");
           e.target.value = '';
           return;
       }
@@ -485,20 +489,20 @@ function App() {
                               numRooms: newRooms.length
                           }
                       }));
-                      alert(`Successfully imported ${groupedAssets.reduce((acc, g) => acc + g.assets.length, 0)} assets across ${groupedAssets.length} areas.`);
+                      notify(`Successfully imported ${groupedAssets.reduce((acc, g) => acc + g.assets.length, 0)} assets across ${groupedAssets.length} areas.`, "success");
                   } else {
-                      alert("Could not extract any assets from this file. Ensure it is a valid format.");
+                      notify("Could not extract any assets from this file. Ensure it is a valid format.", "warning");
                   }
               } catch (innerErr) {
                   console.error("Vendor register extraction error:", innerErr);
-                  alert("Failed to parse vendor register file.");
+                  notify("Failed to parse vendor register file.", "error");
               } finally {
                   setProcessing(false);
                   setLoadingText('');
               }
           };
           reader.onerror = () => {
-              alert("Failed to read vendor file.");
+              notify("Failed to read vendor file.", "error");
               setProcessing(false);
               setLoadingText('');
           };
@@ -507,7 +511,7 @@ function App() {
           console.error(err);
           setProcessing(false);
           setLoadingText('');
-          alert("Failed to parse the file.");
+          notify("Failed to parse the file.", "error");
       } finally {
           if (e.target) {
               e.target.value = '';
@@ -730,14 +734,14 @@ function App() {
     const currentRoom = appState.rooms[appState.currentRoomIndex];
 
     if (!currentRoom) {
-      alert("No active room selected.");
+      notify("No active room selected.", "warning");
       if (e.target) e.target.value = '';
       return;
     }
 
     const MAX_IMAGES = 10;
     if (currentRoom.images.length + files.length > MAX_IMAGES) {
-      alert(`Maximum ${MAX_IMAGES} images allowed per room. You currently have ${currentRoom.images.length} image(s). Please remove some existing photos or select fewer files.`);
+      notify(`Maximum ${MAX_IMAGES} images allowed per room. You currently have ${currentRoom.images.length} image(s).`, "warning");
       if (e.target) e.target.value = '';
       return;
     }
@@ -857,7 +861,7 @@ function App() {
       }
     } catch (err) {
       console.error("Error reading photo upload:", err);
-      alert("Failed to process selected image(s). Please ensure they are valid image files (JPG, PNG, WEBP, GIF).");
+      notify("Failed to process selected image(s). Please ensure they are valid image files (JPG, PNG, WEBP, GIF).", "error");
     } finally {
       setProcessing(false);
       setLoadingText('');
@@ -871,7 +875,7 @@ function App() {
     const currentRoom = appState.rooms[appState.currentRoomIndex];
     if (!currentRoom) return;
     if (!currentRoom.images || currentRoom.images.length === 0) {
-      alert("Please add or upload at least one area photo first.");
+      notify("Please add or upload at least one area photo first.", "warning");
       return;
     }
 
@@ -967,12 +971,19 @@ function App() {
       setSelectedAssetIds(newSet);
   };
 
-  const batchAction = (action: 'verify' | 'unverify' | 'delete') => {
+  const batchAction = async (action: 'verify' | 'unverify' | 'delete') => {
       const currentRoom = appState.rooms[appState.currentRoomIndex];
-      let updatedAssets = [...currentRoom.assets];
+      if (!currentRoom) return;
+      let updatedAssets = [...(currentRoom.assets || [])];
 
       if (action === 'delete') {
-          if (!confirm(`Delete ${selectedAssetIds.size} assets?`)) return;
+          const ok = await confirmAction({
+              title: 'Delete Selected Assets',
+              message: `Delete ${selectedAssetIds.size} selected asset(s) from "${currentRoom.roomName}"?`,
+              confirmLabel: 'Delete',
+              destructive: true,
+          });
+          if (!ok) return;
           updatedAssets = updatedAssets.filter(a => !selectedAssetIds.has(a.id));
       } else {
           const verifyStatus = action === 'verify';
@@ -991,15 +1002,20 @@ function App() {
   };
 
   // --- Export Functions ---
+  const safeFilePrefix = (appState.siteInfo.name || 'Site_Assessment').replace(/[^a-zA-Z0-9_-]+/g, '_');
 
   const exportToExcel = () => {
     const XLSX = (window as any).XLSX;
-    if (!XLSX) return alert("Export library not loaded");
+    if (!XLSX) {
+        notify("Excel export library not loaded. Please check your connection.", "error");
+        return;
+    }
 
     const wb = XLSX.utils.book_new();
+    const usedSheetNames = new Set<string>(['Site Notes']);
 
-    appState.rooms.forEach(room => {
-        if (room.assets.length === 0) return;
+    appState.rooms.forEach((room, idx) => {
+        if (!room.assets || room.assets.length === 0) return;
         const data = [
             ['Category', 'Description', 'Condition', 'Risk', 'Age (yrs)', 'Justification', 'Notes', 'Qty', 'Cost ($)', 'RUL (yrs)', 'Verified', 'Last Action'],
             ...room.assets.map(a => {
@@ -1023,33 +1039,44 @@ function App() {
             })
         ];
         const ws = XLSX.utils.aoa_to_sheet(data);
-        const safeName = (room.roomName || 'Room').substring(0, 31).replace(/[\[\]\*\?\/\\\:]/g, '');
-        XLSX.utils.book_append_sheet(wb, ws, safeName);
+        const baseName = (room.roomName || `Room_${idx + 1}`).replace(/[\[\]\*\?\/\\\:]/g, '').trim() || `Room_${idx + 1}`;
+        let sheetName = baseName.substring(0, 31);
+        let suffix = 2;
+        while (usedSheetNames.has(sheetName)) {
+            const suffixStr = `_${suffix++}`;
+            sheetName = `${baseName.substring(0, 31 - suffixStr.length)}${suffixStr}`;
+        }
+        usedSheetNames.add(sheetName);
+        XLSX.utils.book_append_sheet(wb, ws, sheetName);
     });
 
     const summaryData = [
-        ['Site Name', appState.siteInfo.name],
-        ['Address', appState.siteInfo.address],
+        ['Site Name', appState.siteInfo.name || 'Untitled Site'],
+        ['Address', appState.siteInfo.address || ''],
         ['Site Notes / Executive Summary', appState.siteInfo.notes || '']
     ];
     const wsSummary = XLSX.utils.aoa_to_sheet(summaryData);
     XLSX.utils.book_append_sheet(wb, wsSummary, "Site Notes");
 
-    XLSX.writeFile(wb, `${appState.siteInfo.name}_Assessment.xlsx`);
+    XLSX.writeFile(wb, `${safeFilePrefix}_Assessment.xlsx`);
+    notify("Excel workbook exported successfully.", "success");
   };
 
   const exportToPDF = () => {
       const jspdf = (window as any).jspdf;
-      if (!jspdf) return alert("PDF library not loaded");
+      if (!jspdf) {
+          notify("PDF export library not loaded. Please check your connection.", "error");
+          return;
+      }
       
       const doc = new jspdf.jsPDF('l', 'mm', 'a4');
       const pageWidth = doc.internal.pageSize.getWidth();
       const pageHeight = doc.internal.pageSize.getHeight();
       
       doc.setFontSize(20);
-      doc.text(appState.siteInfo.name, 14, 20);
+      doc.text(appState.siteInfo.name || 'Site Assessment', 14, 20);
       doc.setFontSize(12);
-      doc.text(`Address: ${appState.siteInfo.address}`, 14, 30);
+      doc.text(`Address: ${appState.siteInfo.address || 'Not specified'}`, 14, 30);
       doc.text(`Date: ${new Date().toLocaleDateString()}`, 14, 38);
 
       if (appState.siteInfo.notes) {
@@ -1123,7 +1150,7 @@ function App() {
                       a.condition,
                       a.riskRating || 'Low',
                       a.age || '',
-                      a.justification.substring(0, 40),
+                      (a.justification || '').substring(0, 40),
                       a.notes ? a.notes.substring(0, 40) : '',
                       isBuildingFabric(a.category) ? 'N/A' : a.quantity,
                       `$${a.cost}`,
@@ -1152,7 +1179,8 @@ function App() {
           }
       });
 
-      doc.save(`${appState.siteInfo.name}_Report.pdf`);
+      doc.save(`${safeFilePrefix}_Report.pdf`);
+      notify("PDF report exported.", "success");
   };
 
   const exportToCSV = () => {
@@ -1175,7 +1203,7 @@ function App() {
                   a.cost,
                   a.rul,
                   a.verified ? "Yes" : "No"
-              ].map(v => `"${v}"`).join(",");
+              ].map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(",");
               csvContent += row + "\n";
           });
       });
@@ -1184,10 +1212,12 @@ function App() {
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.setAttribute("href", url);
-      link.setAttribute("download", `${appState.siteInfo.name}_Assessment.csv`);
+      link.setAttribute("download", `${safeFilePrefix}_Assessment.csv`);
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      notify("CSV report exported.", "success");
   };
 
   const exportToJSON = () => {
@@ -1196,6 +1226,9 @@ function App() {
           lastUpdated: new Date().toISOString(),
           rooms: appState.rooms.map(room => ({
               roomName: room.roomName,
+              floorLevel: room.floorLevel,
+              roomCode: room.roomCode,
+              fulcrumRoomId: room.fulcrumRoomId,
               assets: room.assets.map(a => ({
                   ...a,
                   quantity: isBuildingFabric(a.category) ? 'N/A' : a.quantity
@@ -1207,10 +1240,12 @@ function App() {
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.setAttribute("href", url);
-      link.setAttribute("download", `${appState.siteInfo.name}_Data.json`);
+      link.setAttribute("download", `${safeFilePrefix}_Data.json`);
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      notify("JSON data exported.", "success");
   };
 
   const exportForRAG = () => {
@@ -1243,8 +1278,12 @@ function App() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${appState.siteInfo.name}_RAG.json`;
+      a.download = `${safeFilePrefix}_RAG.json`;
+      document.body.appendChild(a);
       a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      notify("RAG JSON export downloaded.", "success");
   };
 
   const goToNextPage = async () => {
@@ -1287,17 +1326,20 @@ function App() {
   };
   
   const handleReset = async () => {
-    if (window.confirm("Delete ALL local data and start a new assessment? (Cloud data is preserved in Firestore)")) {
+    const confirmed = await confirmAction({
+      title: 'Reset Local Assessment Data',
+      message: 'Delete ALL local draft data and start a new assessment? (Cloud data in Firestore and your inspector profile/API key are preserved.)',
+      confirmLabel: 'Reset Local Data',
+      destructive: true,
+    });
+    if (confirmed) {
         setProcessing(true);
         setLoadingText("Clearing local data...");
         try {
             await firebaseService.deleteDatabase();
-            // Force a hard reload to ensure all state is wiped
             window.location.href = window.location.origin;
         } catch (err) {
             console.error("Reset failed", err);
-            // Fallback
-            localStorage.clear();
             window.location.reload();
         }
     }
@@ -1956,6 +1998,17 @@ function App() {
                               Health Dashboard
                           </button>
                           <button
+                              onClick={() => setAppState(prev => ({ ...prev, view: 'video-walk' }))}
+                              className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+                                  appState.view === 'video-walk'
+                                      ? 'bg-indigo-600 text-white shadow'
+                                      : 'text-gray-600 hover:bg-slate-50'
+                              }`}
+                          >
+                              <span className="material-icons text-sm">videocam</span>
+                              Site Walk Video
+                          </button>
+                          <button
                               onClick={() => setAppState(prev => ({ ...prev, view: 'summary' }))}
                               className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 ${
                                   appState.view === 'summary'
@@ -1990,18 +2043,29 @@ function App() {
                   )}
 
                   {appState.view === 'assessment' && currentRoom && (
-                      <div className="mx-auto max-w-7xl px-4 pb-4">
-                        <button type="button" onClick={() => setShowSmartRoomFinder(true)} className="rounded-xl bg-indigo-600 px-5 py-3 font-semibold text-white shadow hover:bg-indigo-700">Identify This Room</button>
+                      <div className="mx-auto max-w-7xl px-4 pb-4 flex items-center justify-between gap-3">
+                        <button
+                          type="button"
+                          onClick={() => setShowSmartRoomFinder(true)}
+                          className="rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white shadow hover:bg-indigo-700 transition flex items-center gap-2 cursor-pointer"
+                        >
+                          <span className="material-icons text-base">travel_explore</span>
+                          Identify This Room
+                        </button>
                       </div>
                   )}
+
                   {showSmartRoomFinder && appState.rooms.length > 0 && (
-                      <SmartRoomFinder rooms={appState.rooms}
-                        onClose={() => setShowSmartRoomFinder(false)}
-                        onSelect={(index) => {
-                          setAppState(prev => ({ ...prev, view: 'assessment', currentRoomIndex: index }));
-                          setShowSmartRoomFinder(false);
-                        }} />
+                      <SmartRoomFinder
+                          rooms={appState.rooms}
+                          onClose={() => setShowSmartRoomFinder(false)}
+                          onSelect={(index) => {
+                              setAppState(prev => ({ ...prev, view: 'assessment', currentRoomIndex: index }));
+                              setShowSmartRoomFinder(false);
+                          }}
+                      />
                   )}
+
                   {appState.view === 'assessment' && currentRoom && (
                       <RoomAssessmentView
                           currentRoomIndex={appState.currentRoomIndex}
@@ -2098,6 +2162,32 @@ function App() {
                           onPopulateSampleData={populateSampleBuildingData}
                           hasEditLock={hasEditLock}
                       />
+                  )}
+
+                  {appState.view === 'video-walk' && (
+                      <div className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8">
+                          <VideoSiteWalkView
+                              siteInfo={appState.siteInfo}
+                              rooms={appState.rooms}
+                              onCommitToInspection={(newRooms, updatedSiteInfo) => {
+                                  setAppState(prev => {
+                                      const nextState = {
+                                          ...prev,
+                                          rooms: newRooms,
+                                          siteInfo: updatedSiteInfo,
+                                          view: 'assessment' as const,
+                                          currentRoomIndex: 0
+                                      };
+                                      firebaseService.saveState(updatedSiteInfo, newRooms);
+                                      return nextState;
+                                  });
+                              }}
+                              onNavigateToView={(targetView) => {
+                                  setAppState(prev => ({ ...prev, view: targetView }));
+                              }}
+                              hasEditLock={hasEditLock}
+                          />
+                      </div>
                   )}
               </>
           )}
@@ -2222,7 +2312,22 @@ function App() {
 
       {(viewMode === 'portfolio' || appState.view !== 'welcome') && (
           <ChatBot 
-              contextData={viewMode === 'portfolio' ? portfolioData : { siteInfo: appState.siteInfo, rooms: appState.rooms }} 
+              contextData={viewMode === 'portfolio' ? {
+                  viewMode: 'portfolio',
+                  activeView: 'summary' as const,
+                  portfolioData,
+                  siteInfo: appState.siteInfo,
+                  rooms: appState.rooms,
+              } : {
+                  viewMode: 'single',
+                  activeView: appState.view,
+                  currentRoomIndex: appState.currentRoomIndex,
+                  activeRoom: appState.rooms[appState.currentRoomIndex],
+                  editingAsset,
+                  selectedAssetIds: Array.from(selectedAssetIds),
+                  siteInfo: appState.siteInfo,
+                  rooms: appState.rooms,
+              }} 
               mode={viewMode}
               privacyMode={appState.privacyMode} 
               messages={chatMessages}

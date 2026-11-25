@@ -1,6 +1,16 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { SiteInfo, Room, WallSegment, GridAssetPlacement, ReconstructionData } from '../types';
-import { reconstructLayoutFromImage } from '../services/geminiService';
+import { reconstructLayoutFromImage, GEMINI_MODEL } from '../services/geminiService';
+import { useNotify } from './NotificationProvider';
+
+function escapeXml(str: string): string {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
 
 interface ArchitecturalReconstructionProps {
   siteInfo: SiteInfo;
@@ -31,6 +41,7 @@ export const ArchitecturalReconstruction: React.FC<ArchitecturalReconstructionPr
   onSave,
   hasEditLock
 }) => {
+  const { notify, confirmAction } = useNotify();
   // Extract initial data or set default empty slate
   const defaultReconstruction: ReconstructionData = siteInfo.reconstructionData || {
     gridScale: 40, // 40px per meter (so a 20x20 grid is 800px)
@@ -139,8 +150,14 @@ export const ArchitecturalReconstruction: React.FC<ArchitecturalReconstructionPr
   };
 
   // Reset to default outer bounds
-  const resetLayout = () => {
-    if (!confirm('Are you sure you want to reset the current schematic layout? All customized walls will be cleared.')) return;
+  const resetLayout = async () => {
+    const confirmed = await confirmAction({
+      title: 'Reset Schematic Layout',
+      message: 'Are you sure you want to reset the current schematic layout? All customized walls will be cleared.',
+      confirmLabel: 'Reset Layout',
+      destructive: true,
+    });
+    if (!confirmed) return;
     updateAndSaveRecon({
       ...recon,
       walls: [
@@ -153,12 +170,13 @@ export const ArchitecturalReconstruction: React.FC<ArchitecturalReconstructionPr
       assets: []
     });
     setStatusMessage('Layout reset to initial boundary container.');
+    notify('Schematic layout reset to boundary defaults.', 'info');
   };
 
   // Add a slice marker manually
   const addSliceMarker = () => {
     if (!sliceNameInput.trim()) {
-      alert('Please enter a name for the slice descriptor.');
+      notify('Please enter a name for the slice descriptor.', 'warning');
       return;
     }
     const newSlice = {
@@ -349,8 +367,8 @@ export const ArchitecturalReconstruction: React.FC<ArchitecturalReconstructionPr
       const py = a.y * gridSpacing;
       return `<g>
         <circle cx="${px}" cy="${py}" r="8" fill="#4f46e5" stroke="#ffffff" stroke-width="1.5"/>
-        <text x="${px}" y="${py + 3}" font-family="sans-serif" font-size="7" font-weight="bold" fill="#ffffff" text-anchor="middle">${a.category.charAt(0)}</text>
-        <text x="${px}" y="${py - 12}" font-family="sans-serif" font-size="6" font-weight="bold" fill="#1e293b" text-anchor="middle">${a.assetName}</text>
+        <text x="${px}" y="${py + 3}" font-family="sans-serif" font-size="7" font-weight="bold" fill="#ffffff" text-anchor="middle">${escapeXml((a.category || 'A').charAt(0))}</text>
+        <text x="${px}" y="${py - 12}" font-family="sans-serif" font-size="6" font-weight="bold" fill="#1e293b" text-anchor="middle">${escapeXml(a.assetName)}</text>
       </g>`;
     }).join('\n');
 
@@ -656,7 +674,7 @@ export const ArchitecturalReconstruction: React.FC<ArchitecturalReconstructionPr
               <div className="border-t border-slate-800 pt-4 mt-4 flex items-center justify-between">
                 <div className="text-xs text-slate-400 flex items-center gap-1.5">
                   <span className="material-icons text-xs text-indigo-400">info</span>
-                  Uses gemini-3.5-flash model
+                  Uses {GEMINI_MODEL} model
                 </div>
                 
                 <button 
@@ -908,10 +926,16 @@ export const ArchitecturalReconstruction: React.FC<ArchitecturalReconstructionPr
                           strokeWidth={strokeWidth}
                           strokeDasharray={strokeDash}
                           className="transition-all hover:stroke-indigo-400 hover:stroke-[5px]"
-                          onClick={(e) => {
+                          onClick={async (e) => {
                             if (drawMode === 'select') {
                               e.stopPropagation();
-                              if (confirm(`Remove this ${w.type} segment?`)) {
+                              const ok = await confirmAction({
+                                title: 'Remove Segment',
+                                message: `Remove this ${w.type} segment?`,
+                                confirmLabel: 'Remove',
+                                destructive: true,
+                              });
+                              if (ok) {
                                 deleteWallSegment(w.id);
                               }
                             }
@@ -929,10 +953,16 @@ export const ArchitecturalReconstruction: React.FC<ArchitecturalReconstructionPr
                       <g 
                         key={a.assetId} 
                         className="cursor-pointer"
-                        onClick={(e) => {
+                        onClick={async (e) => {
                           if (drawMode === 'select') {
                             e.stopPropagation();
-                            if (confirm(`Remove asset placement for "${a.assetName}"?`)) {
+                            const ok = await confirmAction({
+                              title: 'Remove Asset Placement',
+                              message: `Remove asset placement for "${a.assetName}"?`,
+                              confirmLabel: 'Remove',
+                              destructive: true,
+                            });
+                            if (ok) {
                               deletePlacedAsset(a.assetId);
                             }
                           }

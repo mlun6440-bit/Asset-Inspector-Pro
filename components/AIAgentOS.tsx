@@ -21,6 +21,7 @@ import {
 } from '../services/geminiService';
 import { AsBuiltDrawing, HistoricalVisionCapture } from '../types';
 import { compileFacilityKnowledgeGraph, analyzeGraphRiskPropagation, queryKnowledgeGraph, GraphCascadeRiskResult } from '../services/graphCompiler';
+import { useNotify } from './NotificationProvider';
 
 const computeGraphLayout = (nodes: any[], edges: any[]) => {
   const width = 640;
@@ -146,6 +147,7 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
   onNavigateToClause,
   onUpdateRooms
 }) => {
+  const { notify } = useNotify();
   // State for Agent OS
   const [osState, setOsState] = useState<AgentOSState>(() => {
     if (siteInfo.agentOS) {
@@ -161,7 +163,8 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
         { id: 'compliance', name: 'ISO 55001 Compliance Auditor', description: 'Audits physical assets against standard compliance guidelines, checking lifecycle processes and legal documentation.', category: 'compliance', enabled: true },
         { id: 'finance', name: 'AI CFO & Strategic Capital Monitor', description: 'Provides real-time financial tracking, replacement cash flow forecasting, asset condition/risk rankings, and executive-level summaries.', category: 'finance', enabled: true },
         { id: 'risk', name: 'Risk Vector Mitigator', description: 'Identifies immediate safety hazards and generates high-fidelity remediation and contingency plans.', category: 'risk', enabled: true },
-        { id: 'vision', name: 'Multi-Modal Vision Extractor', description: 'Enables real-time visual assessment, deduplication, and OCR parsing of technical vendor asset registers.', category: 'vision', enabled: true }
+        { id: 'vision', name: 'Multi-Modal Vision Extractor', description: 'Enables real-time visual assessment, deduplication, and OCR parsing of technical vendor asset registers.', category: 'vision', enabled: true },
+        { id: 'video_walk', name: 'Gemini Continuous Video Walk Extractor', description: 'Agentic multimodal video surveyor (Brad Bonanno long-context technique): ingests continuous facility walkthroughs (phone, GoPro, YouTube), temporal-spatial grounding, automatic room transitions, and ISO 55000 asset logging.', category: 'vision', enabled: true }
       ],
       memories: [],
       customRules: [
@@ -336,14 +339,14 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
           setSelectedDwg(newDwg);
         } catch (innerErr) {
           console.error("Error analyzing drawing:", innerErr);
-          alert("Failed to analyze drawing file. Please try again.");
+          notify("Failed to analyze drawing file. Please try again.", "error");
         } finally {
           setDwgExtracting(false);
           setIsUploadingDwg(false);
         }
       };
       reader.onerror = () => {
-        alert("Failed to read drawing file.");
+        notify("Failed to read drawing file.", "error");
         setDwgExtracting(false);
         setIsUploadingDwg(false);
       };
@@ -369,7 +372,7 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
       setIsUploadingVision(false);
     };
     reader.onerror = () => {
-      alert("Failed to read image file.");
+      notify("Failed to read image file.", "error");
       setIsUploadingVision(false);
     };
     reader.readAsDataURL(file);
@@ -380,7 +383,7 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
 
   const handleAddVisionCapture = () => {
     if (!visionAssetId || !visionFileUrl) {
-      alert("Please select an asset and upload a photo.");
+      notify("Please select an asset and upload a photo.", "warning");
       return;
     }
     
@@ -619,7 +622,7 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
   const runJarvisWorkOrderAudit = async () => {
     const wos = osState.workOrders || [];
     if (wos.length === 0) {
-      alert("Please log or seed some Work Orders before running the Jarvis Audit.");
+      notify("Please log or seed some Work Orders before running the Jarvis Audit.", "warning");
       return;
     }
 
@@ -676,7 +679,7 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
       );
 
       if (currentAssetsList.length === 0) {
-        alert("No assets found in the inventory. Please create or import some assets first.");
+        notify("No assets found in the inventory. Please create or import some assets first.", "warning");
         setIsAnalyzingPM(false);
         return;
       }
@@ -692,7 +695,7 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
       setSelectedUpdates(initialSelection);
     } catch (err) {
       console.error(err);
-      alert("Failed to analyze PM report. Please ensure the API is configured correctly.");
+      notify("Failed to analyze PM report. Please ensure the API is configured correctly.", "error");
     } finally {
       setIsAnalyzingPM(false);
     }
@@ -725,11 +728,11 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
           await runPMReportAnalysis(dataUrl, file.type, file.name);
         } catch (innerErr) {
           console.error("Error analyzing PM report:", innerErr);
-          alert("Failed to analyze PM report file.");
+          notify("Failed to analyze PM report file.", "error");
         }
       };
       reader.onerror = () => {
-        alert("Failed to read PM report file.");
+        notify("Failed to read PM report file.", "error");
         setIsAnalyzingPM(false);
       };
       reader.readAsDataURL(file);
@@ -753,13 +756,13 @@ export const AIAgentOS: React.FC<AIAgentOSProps> = ({
 
   const handleApplyUpdates = () => {
     if (!onUpdateRooms) {
-      alert("Asset updating is not available in the current context.");
+      notify("Asset updating is not available in the current context.", "warning");
       return;
     }
 
     const updatesToApply = proposedUpdates.filter(u => selectedUpdates[u.assetId]);
     if (updatesToApply.length === 0) {
-      alert("No updates selected.");
+      notify("No updates selected.", "warning");
       return;
     }
 

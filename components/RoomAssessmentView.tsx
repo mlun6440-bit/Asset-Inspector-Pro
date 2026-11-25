@@ -2,6 +2,7 @@ import React, { useRef, useState } from 'react';
 import { Camera, ImagePlus, Trash2, ZoomIn, Sparkles, UploadCloud, FileImage, ShieldAlert } from 'lucide-react';
 import { Room, Asset } from '../types';
 import { ASSET_CATEGORIES, CONDITION_OPTIONS, RISK_OPTIONS, RISK_COLORS } from '../constants';
+import { useNotify } from './NotificationProvider';
 
 interface RoomAssessmentViewProps {
   currentRoomIndex: number;
@@ -44,6 +45,7 @@ export const RoomAssessmentView: React.FC<RoomAssessmentViewProps> = ({
   setPreviewImage,
   hasEditLock,
 }) => {
+  const { notify, promptInput } = useNotify();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -77,7 +79,7 @@ export const RoomAssessmentView: React.FC<RoomAssessmentViewProps> = ({
 
   const addSamplePhoto = () => {
     if (currentRoom.images.length >= 10) {
-      alert("Max 10 images per room reached.");
+      notify("Maximum 10 images per room reached.", "warning");
       return;
     }
 
@@ -256,19 +258,36 @@ export const RoomAssessmentView: React.FC<RoomAssessmentViewProps> = ({
 
             <button
               type="button"
-              onClick={() => {
-                const url = prompt("Enter Image URL or Paste Image Link:");
-                if (url && url.trim().length > 0) {
+              onClick={async () => {
+                if (currentRoom.images.length >= 10) {
+                  notify("Maximum 10 images per room reached.", "warning");
+                  return;
+                }
+                const url = await promptInput({
+                  title: "Add External Image URL",
+                  message: "Paste a valid https:// image link to attach to this room.",
+                  placeholder: "https://example.com/photo.jpg",
+                  confirmLabel: "Attach Image",
+                  validate: (val) => {
+                    if (!val) return "Please enter an image URL.";
+                    if (!/^https?:\/\/|^data:image\//i.test(val)) {
+                      return "URL must start with https://, http://, or data:image/.";
+                    }
+                    return null;
+                  }
+                });
+                if (url) {
                   const newImg = {
                     id: crypto.randomUUID(),
-                    dataUrl: url.trim(),
+                    dataUrl: url,
                     name: "External Image URL",
                     timestamp: Date.now()
                   };
                   updateCurrentRoom({ images: [...currentRoom.images, newImg] });
+                  notify("External image attached to room.", "success");
                 }
               }}
-              className="px-3.5 py-2 bg-sky-50 text-sky-700 hover:bg-sky-100 rounded-lg text-xs font-bold flex items-center gap-1.5 transition border border-sky-200"
+              className="px-3.5 py-2 bg-sky-50 text-sky-700 hover:bg-sky-100 rounded-lg text-xs font-bold flex items-center gap-1.5 transition border border-sky-200 cursor-pointer"
             >
               <span className="material-icons text-sm text-sky-600">link</span>
               Paste Image URL

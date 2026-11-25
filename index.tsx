@@ -1,6 +1,8 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
+import { ErrorBoundary } from './components/ErrorBoundary';
+import { NotificationProvider } from './components/NotificationProvider';
 
 // Global fallback for crypto.randomUUID in non-secure contexts/iframe environments
 if (typeof window !== 'undefined') {
@@ -26,6 +28,10 @@ if (!rootElement) {
 const root = ReactDOM.createRoot(rootElement);
 root.render(
   <React.StrictMode>
-    <App />
+    <ErrorBoundary>
+      <NotificationProvider>
+        <App />
+      </NotificationProvider>
+    </ErrorBoundary>
   </React.StrictMode>
 );
